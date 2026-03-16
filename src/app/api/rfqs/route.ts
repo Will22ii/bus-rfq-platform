@@ -23,7 +23,7 @@ type DateInput = {
 
 type CreateRfqBody = {
   title: string;
-  concert_name: string;
+  concert_name?: string;
   venue: string;
   quote_deadline_at: string;
   dates: DateInput[];
@@ -44,14 +44,15 @@ export async function POST(request: NextRequest) {
   const { title, concert_name, venue, quote_deadline_at, dates } = body;
   if (
     !title ||
-    !concert_name ||
     !venue ||
     !quote_deadline_at ||
     !Array.isArray(dates) ||
     dates.length === 0
   ) {
-    return jsonError("title, concert_name, venue, quote_deadline_at, dates are required");
+    return jsonError("title, venue, quote_deadline_at, dates are required");
   }
+  // DB rfqs.concert_name is NOT NULL: use venue when client omits concert_name; fallback "" so we never pass undefined
+  const concertNameForDb = concert_name?.trim() || venue.trim() || "";
 
   const deadline = new Date(quote_deadline_at);
   if (Number.isNaN(deadline.getTime())) {
@@ -115,7 +116,7 @@ export async function POST(request: NextRequest) {
     .from("rfqs")
     .insert({
       title,
-      concert_name,
+      concert_name: concertNameForDb,
       venue,
       requester_company_id: auth.company.id,
       created_by_user_id: auth.profile.id,

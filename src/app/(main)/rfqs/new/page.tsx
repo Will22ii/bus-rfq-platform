@@ -1,63 +1,65 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Label } from "@/components/ui/label";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/hooks/use-auth";
 import { api } from "@/lib/api-client";
-import { ArrowLeft, Plus, Trash2 } from "lucide-react";
+import {
+  RFQBasicInfo,
+  ServiceDateSelector,
+  ScheduleGroupEditor,
+  RouteSelector,
+  RFQRouteRequirementTable,
+  type Schedule,
+  type DeparturePoint,
+  type RouteRequirement,
+  type ScheduleTimes,
+} from "@/components/rfq-create";
+import { ArrowLeft } from "lucide-react";
 
-type DeparturePoint = { id: string; name: string; region: string };
+function getScheduleForDate(schedules: Schedule[], date: string): Schedule | undefined {
+  return schedules.find((s) => s.assignedDates.includes(date));
+}
 
-type RouteRow = {
-  departure_point_id: string;
-  destination: string;
-  arrival_time_round1: string;
-  arrival_time_round2: string;
-  return_departure_time: string;
-  bus_type: "44_seat" | "31_seat" | "28_seat";
-  required_round_trip_count: number;
-  required_one_way_count: number;
-};
+function scheduleToTimes(schedule: Schedule): ScheduleTimes {
+  return {
+    arrivalTimeRound1: schedule.arrivalTimeRound1,
+    arrivalTimeRound2: schedule.arrivalTimeRound2,
+    ...(schedule.roundCount >= 3 && { arrivalTimeRound3: schedule.arrivalTimeRound3 }),
+    returnDepartureTime: schedule.returnDepartureTime,
+  };
+}
 
-const BUS_TYPES = [
-  { value: "44_seat", label: "44인승" },
-  { value: "31_seat", label: "31인승" },
-  { value: "28_seat", label: "28인승" },
-] as const;
+const defaultRequirement = (): RouteRequirement => ({
+  bus_type: "44_seat",
+  required_round_trip_count: 0,
+  required_one_way_count: 0,
+});
 
 export default function RfqNewPage() {
   const router = useRouter();
   const { company } = useAuth();
   const [step, setStep] = useState(1);
   const [departurePoints, setDeparturePoints] = useState<DeparturePoint[]>([]);
+
+  // Step 1
   const [title, setTitle] = useState("");
-  const [concertName, setConcertName] = useState("");
   const [venue, setVenue] = useState("");
   const [quoteDeadlineAt, setQuoteDeadlineAt] = useState("");
-  const [selectedDates, setSelectedDates] = useState<string[]>([]);
+  const [serviceDates, setServiceDates] = useState<string[]>([]);
   const [dateInput, setDateInput] = useState("");
-  const [routes, setRoutes] = useState<RouteRow[]>([]);
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
+  const [selectedDeparturePointIds, setSelectedDeparturePointIds] = useState<string[]>([]);
+
+  // Step 2: per (date, departure_point_id) -> RouteRequirement
+  const [routeRequirements, setRouteRequirements] = useState<
+    Record<string, Record<string, RouteRequirement>>
+  >({});
+
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
 
@@ -71,100 +73,139 @@ export default function RfqNewPage() {
   }, [canCreate]);
 
   const addDate = () => {
-    if (!dateInput) return;
+    if (!dateInput.trim()) return;
     const d = dateInput.trim();
-    if (d && !selectedDates.includes(d)) setSelectedDates((prev) => [...prev, d].sort());
+    if (!serviceDates.includes(d)) setServiceDates((prev) => [...prev, d].sort());
     setDateInput("");
   };
 
   const removeDate = (d: string) => {
-    setSelectedDates((prev) => prev.filter((x) => x !== d));
+    setServiceDates((prev) => prev.filter((x) => x !== d));
+    setSchedules((prev) =>
+      prev
+        .map((s) => ({
+          ...s,
+          assignedDates: s.assignedDates.filter((x) => x !== d),
+        }))
+        .filter((s) => s.assignedDates.length > 0)
+    );
   };
 
-  const addRoute = () => {
-    setRoutes((prev) => [
-      ...prev,
-      {
-        departure_point_id: departurePoints[0]?.id ?? "",
-        destination: "",
-        arrival_time_round1: "",
-        arrival_time_round2: "",
-        return_departure_time: "",
-        bus_type: "44_seat",
-        required_round_trip_count: 0,
-        required_one_way_count: 0,
-      },
-    ]);
+  const allDatesAssigned =
+    serviceDates.length > 0 &&
+    serviceDates.every((d) => schedules.some((s) => s.assignedDates.includes(d)));
+  const noDateInMultipleSchedules = serviceDates.every((d) => {
+    const count = schedules.filter((s) => s.assignedDates.includes(d)).length;
+    return count <= 1;
+  });
+  const everyScheduleHasTimes = schedules.every(
+    (s) => s.arrivalTimeRound1 && s.returnDepartureTime
+  );
+
+  // 1단계 실시간 검증: 견적 마감일이 비어있지 않을 때, 과거 또는 5일 초과면 붉은색 ALERT (브라우저 로컬 시간 기준, 한국에서는 KST)
+  const deadlineError = useMemo(() => {
+    if (!quoteDeadlineAt.trim()) return "";
+    const now = new Date();
+    const deadline = new Date(quoteDeadlineAt);
+    if (Number.isNaN(deadline.getTime())) return "";
+    if (deadline.getTime() <= now.getTime()) {
+      return "견적 마감일은 현재 시점 이후여야 합니다.";
+    }
+    const fiveDaysLater = new Date(now);
+    fiveDaysLater.setDate(fiveDaysLater.getDate() + 5);
+    if (deadline.getTime() > fiveDaysLater.getTime()) {
+      return "견적 마감일은 오늘부터 5일 이내여야 합니다.";
+    }
+    return "";
+  }, [quoteDeadlineAt]);
+
+  const canGoStep2 =
+    title.trim() &&
+    venue.trim() &&
+    quoteDeadlineAt &&
+    !deadlineError &&
+    serviceDates.length > 0 &&
+    schedules.length > 0 &&
+    allDatesAssigned &&
+    noDateInMultipleSchedules &&
+    everyScheduleHasTimes &&
+    selectedDeparturePointIds.length > 0;
+
+  const goToStep2 = () => {
+    const initial: Record<string, Record<string, RouteRequirement>> = {};
+    serviceDates.forEach((date) => {
+      initial[date] = {};
+      selectedDeparturePointIds.forEach((depId) => {
+        initial[date][depId] = defaultRequirement();
+      });
+    });
+    setRouteRequirements(initial);
+    setStep(2);
   };
 
-  const updateRoute = (index: number, field: keyof RouteRow, value: string | number) => {
-    setRoutes((prev) => {
-      const next = [...prev];
-      next[index] = { ...next[index], [field]: value };
+  const setRequirement = (
+    date: string,
+    departurePointId: string,
+    field: keyof RouteRequirement,
+    value: string | number
+  ) => {
+    setRouteRequirements((prev) => {
+      const next = { ...prev };
+      if (!next[date]) next[date] = {};
+      next[date] = { ...next[date], [departurePointId]: { ...(next[date][departurePointId] ?? defaultRequirement()), [field]: value } };
       return next;
     });
   };
 
-  const removeRoute = (index: number) => {
-    setRoutes((prev) => prev.filter((_, i) => i !== index));
+  const buildPayload = () => {
+    const deadline = new Date(quoteDeadlineAt);
+    const dates = serviceDates.map((service_date) => {
+      const schedule = getScheduleForDate(schedules, service_date);
+      if (!schedule) return { service_date, routes: [] };
+      const times = scheduleToTimes(schedule);
+      const routes = selectedDeparturePointIds.map((departure_point_id) => {
+        const req = routeRequirements[service_date]?.[departure_point_id] ?? defaultRequirement();
+        return {
+          departure_point_id,
+          destination: venue.trim(),
+          arrival_time_round1: times.arrivalTimeRound1 || undefined,
+          arrival_time_round2: times.arrivalTimeRound2 || undefined,
+          return_departure_time: times.returnDepartureTime || undefined,
+          bus_type: req.bus_type,
+          required_round_trip_count: req.required_round_trip_count,
+          required_one_way_count: req.required_one_way_count,
+        };
+      });
+      return { service_date, routes };
+    });
+    return {
+      title: title.trim(),
+      venue: venue.trim(),
+      quote_deadline_at: deadline.toISOString(),
+      dates,
+    };
   };
-
-  const canGoStep2 =
-    title.trim() &&
-    concertName.trim() &&
-    venue.trim() &&
-    quoteDeadlineAt &&
-    selectedDates.length > 0 &&
-    routes.length > 0 &&
-    routes.every(
-      (r) =>
-        r.departure_point_id &&
-        r.destination.trim() &&
-        r.required_round_trip_count >= 0 &&
-        r.required_one_way_count >= 0
-    );
 
   const handleCreate = async () => {
     setError("");
-    setSubmitting(true);
     const deadline = new Date(quoteDeadlineAt);
     if (Number.isNaN(deadline.getTime())) {
       setError("견적 마감일을 올바르게 입력해 주세요.");
-      setSubmitting(false);
       return;
     }
     const now = new Date();
     if (deadline <= now) {
       setError("견적 마감일은 미래 시점이어야 합니다.");
-      setSubmitting(false);
       return;
     }
     const maxDeadline = new Date();
     maxDeadline.setDate(maxDeadline.getDate() + 5);
     if (deadline > maxDeadline) {
       setError("견적 마감일은 오늘로부터 5일 이내여야 합니다.");
-      setSubmitting(false);
       return;
     }
-    const payload = {
-      title: title.trim(),
-      concert_name: concertName.trim(),
-      venue: venue.trim(),
-      quote_deadline_at: deadline.toISOString(),
-      dates: selectedDates.map((service_date) => ({
-        service_date,
-        routes: routes.map((r) => ({
-          departure_point_id: r.departure_point_id,
-          destination: r.destination.trim(),
-          arrival_time_round1: r.arrival_time_round1 || undefined,
-          arrival_time_round2: r.arrival_time_round2 || undefined,
-          return_departure_time: r.return_departure_time || undefined,
-          bus_type: r.bus_type,
-          required_round_trip_count: r.required_round_trip_count,
-          required_one_way_count: r.required_one_way_count,
-        })),
-      })),
-    };
+    setSubmitting(true);
+    const payload = buildPayload();
     const res = await api.post<{ id: string }>("/rfqs", payload);
     setSubmitting(false);
     if (res.error) {
@@ -200,205 +241,44 @@ export default function RfqNewPage() {
         <Card>
           <CardHeader>
             <CardTitle>1단계: 기본 정보 및 운행 스케줄</CardTitle>
-            <CardDescription>공연명, 출발지, 날짜, 노선을 입력하세요. 선택한 날짜에 동일한 운행 스케줄이 적용됩니다.</CardDescription>
+            <CardDescription>
+              제목, 행사장, 견적 마감, 운행 날짜, 스케줄, 노선(출발지)을 입력하세요. 도착지는 행사장으로 동일 적용됩니다.
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            <div className="grid gap-4 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label>공연명</Label>
-                <Input value={concertName} onChange={(e) => setConcertName(e.target.value)} placeholder="공연명" />
-              </div>
-              <div className="space-y-2">
-                <Label>RFQ 제목</Label>
-                <Input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="제목" />
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label>출발지</Label>
-              <Input value={venue} onChange={(e) => setVenue(e.target.value)} placeholder="출발지" />
-            </div>
-            <div className="space-y-2">
-              <Label>견적 마감일시 (오늘부터 5일 이내)</Label>
-              <Input
-                type="datetime-local"
-                value={quoteDeadlineAt}
-                onChange={(e) => setQuoteDeadlineAt(e.target.value)}
-              />
-            </div>
-            <div className="space-y-2">
-              <Label>운행 날짜 (복수 선택)</Label>
-              <div className="flex gap-2">
-                <Input
-                  type="date"
-                  value={dateInput}
-                  onChange={(e) => setDateInput(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && (e.preventDefault(), addDate())}
-                />
-                <Button type="button" variant="outline" onClick={addDate}>
-                  추가
-                </Button>
-              </div>
-              {selectedDates.length > 0 && (
-                <div className="flex flex-wrap gap-2 pt-2">
-                  {selectedDates.map((d) => (
-                    <span
-                      key={d}
-                      className="inline-flex items-center gap-1 rounded-md bg-muted px-2 py-1 text-sm"
-                    >
-                      {d}
-                      <button type="button" onClick={() => removeDate(d)} className="hover:opacity-70">
-                        <Trash2 className="size-3" />
-                      </button>
-                    </span>
-                  ))}
-                </div>
-              )}
-            </div>
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label>노선</Label>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={addRoute}
-                  disabled={departurePoints.length === 0}
-                  title={departurePoints.length === 0 ? "출발지 데이터를 불러온 후 추가할 수 있습니다." : undefined}
-                >
-                  <Plus className="mr-1 size-4" />
-                  노선 추가
-                </Button>
-              </div>
-              {departurePoints.length === 0 && (
-                <p className="text-sm text-muted-foreground">출발지 목록을 불러오는 중이거나 없습니다. 새로고침 후 이용해 주세요.</p>
-              )}
-              <div className="overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="min-w-[120px]">출발지</TableHead>
-                      <TableHead className="min-w-[100px]">도착지</TableHead>
-                      <TableHead className="min-w-[120px]">1회차 도착</TableHead>
-                      <TableHead className="min-w-[120px]">2회차 도착</TableHead>
-                      <TableHead className="min-w-[120px]">귀가 출발</TableHead>
-                      <TableHead className="min-w-[100px]">버스 타입</TableHead>
-                      <TableHead className="min-w-[100px]">왕복 필요</TableHead>
-                      <TableHead className="min-w-[100px]">편도 필요</TableHead>
-                      <TableHead className="w-[50px] min-w-[50px]"></TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {routes.map((r, i) => (
-                      <TableRow key={i}>
-                        <TableCell className="min-w-[120px]">
-                          <Select
-                            value={r.departure_point_id || undefined}
-                            onValueChange={(v) => updateRoute(i, "departure_point_id", v ?? "")}
-                          >
-                            <SelectTrigger className="w-[140px] min-w-[140px]">
-                              <SelectValue placeholder="출발지 선택">
-                                {r.departure_point_id
-                                  ? (departurePoints.find((p) => p.id === r.departure_point_id)?.name ?? "출발지 선택")
-                                  : null}
-                              </SelectValue>
-                            </SelectTrigger>
-                            <SelectContent className="min-w-[140px]">
-                              {departurePoints.map((point) => (
-                                <SelectItem key={point.id} value={point.id}>
-                                  {point.name}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </TableCell>
-                        <TableCell className="min-w-[100px]">
-                          <Input
-                            value={r.destination}
-                            onChange={(e) => updateRoute(i, "destination", e.target.value)}
-                            placeholder="도착지"
-                            className="min-w-[100px] w-28"
-                          />
-                        </TableCell>
-                        <TableCell className="min-w-[120px]">
-                          <Input
-                            type="time"
-                            value={r.arrival_time_round1}
-                            onChange={(e) => updateRoute(i, "arrival_time_round1", e.target.value)}
-                            className="w-32 min-w-[120px]"
-                          />
-                        </TableCell>
-                        <TableCell className="min-w-[120px]">
-                          <Input
-                            type="time"
-                            value={r.arrival_time_round2}
-                            onChange={(e) => updateRoute(i, "arrival_time_round2", e.target.value)}
-                            className="w-32 min-w-[120px]"
-                          />
-                        </TableCell>
-                        <TableCell className="min-w-[120px]">
-                          <Input
-                            type="time"
-                            value={r.return_departure_time}
-                            onChange={(e) => updateRoute(i, "return_departure_time", e.target.value)}
-                            className="w-32 min-w-[120px]"
-                          />
-                        </TableCell>
-                        <TableCell className="min-w-[100px]">
-                          <Select
-                            value={r.bus_type}
-                            onValueChange={(v) => updateRoute(i, "bus_type", (v ?? "44_seat") as RouteRow["bus_type"])}
-                          >
-                            <SelectTrigger className="min-w-[100px] w-28">
-                              <SelectValue placeholder="버스 타입">
-                                {r.bus_type
-                                  ? (BUS_TYPES.find((b) => b.value === r.bus_type)?.label ?? r.bus_type)
-                                  : null}
-                              </SelectValue>
-                            </SelectTrigger>
-                            <SelectContent>
-                              {BUS_TYPES.map((b) => (
-                                <SelectItem key={b.value} value={b.value}>
-                                  {b.label}
-                                </SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-                        </TableCell>
-                        <TableCell className="min-w-[100px]">
-                          <Input
-                            type="number"
-                            min={0}
-                            value={r.required_round_trip_count}
-                            onChange={(e) =>
-                              updateRoute(i, "required_round_trip_count", parseInt(e.target.value, 10) || 0)
-                            }
-                            className="w-20 min-w-[80px]"
-                          />
-                        </TableCell>
-                        <TableCell className="min-w-[100px]">
-                          <Input
-                            type="number"
-                            min={0}
-                            value={r.required_one_way_count}
-                            onChange={(e) =>
-                              updateRoute(i, "required_one_way_count", parseInt(e.target.value, 10) || 0)
-                            }
-                            className="w-20 min-w-[80px]"
-                          />
-                        </TableCell>
-                        <TableCell className="w-[50px] min-w-[50px]">
-                          <Button type="button" variant="ghost" size="icon" onClick={() => removeRoute(i)}>
-                            <Trash2 className="size-4" />
-                          </Button>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </div>
-            <Button onClick={() => setStep(2)} disabled={!canGoStep2}>
-              다음: 2단계 확인
+            <RFQBasicInfo
+              title={title}
+              venue={venue}
+              quoteDeadlineAt={quoteDeadlineAt}
+              deadlineError={deadlineError || undefined}
+              onTitleChange={setTitle}
+              onVenueChange={setVenue}
+              onQuoteDeadlineAtChange={setQuoteDeadlineAt}
+            />
+            <ServiceDateSelector
+              selectedDates={serviceDates}
+              dateInput={dateInput}
+              onDateInputChange={setDateInput}
+              onAddDate={addDate}
+              onRemoveDate={removeDate}
+            />
+            <ScheduleGroupEditor
+              schedules={schedules}
+              serviceDates={serviceDates}
+              onSchedulesChange={setSchedules}
+            />
+            <RouteSelector
+              departurePoints={departurePoints}
+              selectedIds={selectedDeparturePointIds}
+              onSelectedIdsChange={setSelectedDeparturePointIds}
+            />
+            {!allDatesAssigned && serviceDates.length > 0 && (
+              <p className="text-sm text-destructive">
+                모든 운행 날짜를 스케줄에 배정해 주세요. 각 날짜는 하나의 스케줄에만 포함되어야 합니다.
+              </p>
+            )}
+            <Button onClick={goToStep2} disabled={!canGoStep2}>
+              다음: 2단계 노선 요건 입력
             </Button>
           </CardContent>
         </Card>
@@ -407,50 +287,44 @@ export default function RfqNewPage() {
       {step === 2 && (
         <Card>
           <CardHeader>
-            <CardTitle>2단계: 확인 및 생성</CardTitle>
-            <CardDescription>날짜별 노선을 확인한 뒤 RFQ를 생성하세요.</CardDescription>
+            <CardTitle>2단계: 날짜별 노선 요건</CardTitle>
+            <CardDescription>
+              각 날짜 탭에서 버스 타입과 필요 대수를 입력하세요. 도착·귀가 시간은 1단계 스케줄에서 자동 적용됩니다.
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            <Tabs defaultValue={selectedDates[0] ?? ""}>
+            <Tabs defaultValue={serviceDates[0] ?? ""}>
               <TabsList>
-                {selectedDates.map((d) => (
+                {serviceDates.map((d) => (
                   <TabsTrigger key={d} value={d}>
                     {d}
                   </TabsTrigger>
                 ))}
               </TabsList>
-              {selectedDates.map((date) => (
-                <TabsContent key={date} value={date}>
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>노선</TableHead>
-                        <TableHead>1회차 도착</TableHead>
-                        <TableHead>2회차 도착</TableHead>
-                        <TableHead>귀가 출발</TableHead>
-                        <TableHead>버스 타입</TableHead>
-                        <TableHead>왕복 필요</TableHead>
-                        <TableHead>편도 필요</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {routes.map((r, i) => (
-                        <TableRow key={i}>
-                          <TableCell>
-                            {departurePoints.find((dp) => dp.id === r.departure_point_id)?.name ?? "-"} → {r.destination}
-                          </TableCell>
-                          <TableCell>{r.arrival_time_round1 || "-"}</TableCell>
-                          <TableCell>{r.arrival_time_round2 || "-"}</TableCell>
-                          <TableCell>{r.return_departure_time || "-"}</TableCell>
-                          <TableCell>{BUS_TYPES.find((b) => b.value === r.bus_type)?.label ?? r.bus_type}</TableCell>
-                          <TableCell>{r.required_round_trip_count}</TableCell>
-                          <TableCell>{r.required_one_way_count}</TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </TabsContent>
-              ))}
+              {serviceDates.map((date) => {
+                const schedule = getScheduleForDate(schedules, date);
+                const roundCount = schedule?.roundCount ?? 2;
+                const scheduleTimes = schedule ? scheduleToTimes(schedule) : {
+                  arrivalTimeRound1: "",
+                  arrivalTimeRound2: "",
+                  returnDepartureTime: "",
+                };
+                const requirements = routeRequirements[date] ?? {};
+                return (
+                  <TabsContent key={date} value={date}>
+                    <RFQRouteRequirementTable
+                      roundCount={roundCount}
+                      departurePointIds={selectedDeparturePointIds}
+                      departurePoints={departurePoints}
+                      scheduleTimes={scheduleTimes}
+                      requirements={requirements}
+                      onRequirementChange={(depId, field, value) =>
+                        setRequirement(date, depId, field, value)
+                      }
+                    />
+                  </TabsContent>
+                );
+              })}
             </Tabs>
             {error && <p className="text-sm text-destructive">{error}</p>}
             <div className="flex gap-2">

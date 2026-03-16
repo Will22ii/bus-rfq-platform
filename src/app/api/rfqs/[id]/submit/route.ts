@@ -131,7 +131,7 @@ export async function POST(
     } else {
       hasAnySupply = true;
       if (p.round_trip_price == null || p.one_way_price == null) {
-        return jsonError(`route_prices[${i}]: price required when supply >= 1`);
+        return jsonError(`공급이 있는 노선에는 왕복·편도 가격이 모두 필요합니다. (노선 순서: ${i + 1})`);
       }
       if (p.round_trip_price < 0 || p.one_way_price < 0) {
         return jsonError(`route_prices[${i}]: price must be >= 0`);

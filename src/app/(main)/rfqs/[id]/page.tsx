@@ -50,6 +50,27 @@ type Submission = {
 
 const BUS_LABEL: Record<string, string> = { "44_seat": "44인승", "31_seat": "31인승", "28_seat": "28인승" };
 
+/** 노선 기준 키 (날짜 무관). 동일 출발지·도착지는 모든 날짜에서 같은 가격으로 취급 */
+function routeKey(r: { departure_point_id: string; destination: string }) {
+  return `${r.departure_point_id}|${r.destination}`;
+}
+
+function buildPricesByRouteKey(
+  routes: RfqRoute[],
+  priceRows: PriceRow[]
+): Record<string, { round_trip_price: number | null; one_way_price: number | null }> {
+  const routeMap = new Map(routes.map((r) => [r.id, r]));
+  const out: Record<string, { round_trip_price: number | null; one_way_price: number | null }> = {};
+  for (const row of priceRows ?? []) {
+    const route = routeMap.get(row.rfq_route_id);
+    if (route) {
+      const key = routeKey(route);
+      out[key] = { round_trip_price: row.round_trip_price ?? null, one_way_price: row.one_way_price ?? null };
+    }
+  }
+  return out;
+}
+
 export default function RfqDetailPage() {
   const params = useParams();
   const id = params.id as string;
@@ -59,7 +80,10 @@ export default function RfqDetailPage() {
   const [rfqRoutes, setRfqRoutes] = useState<RfqRoute[]>([]);
   const [submissions, setSubmissions] = useState<Submission[]>([]);
   const [supply, setSupply] = useState<SupplyRow[]>([]);
-  const [prices, setPrices] = useState<PriceRow[]>([]);
+  /** 가격은 노선 기준(날짜 무관). 동일 출발지·도착지면 모든 날짜 탭에서 같은 값 표시 */
+  const [pricesByRouteKey, setPricesByRouteKey] = useState<Record<string, { round_trip_price: number | null; one_way_price: number | null }>>({});
+  /** 요청자용: API에서 받은 공급사별 노선 가격 (참여 공급사 견적 테이블 표시용) */
+  const [routePricesFromApi, setRoutePricesFromApi] = useState<PriceRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [cancelLoading, setCancelLoading] = useState(false);
@@ -105,7 +129,8 @@ export default function RfqDetailPage() {
         setRfqRoutes(d.rfq_routes ?? []);
         setSubmissions(d.rfq_supplier_submissions ?? []);
         setSupply(d.rfq_supplier_route_supply ?? []);
-        setPrices(d.rfq_supplier_route_prices ?? []);
+        setPricesByRouteKey(buildPricesByRouteKey(d.rfq_routes ?? [], d.rfq_supplier_route_prices ?? []));
+        setRoutePricesFromApi(d.rfq_supplier_route_prices ?? []);
         if ((d.rfq_supplier_route_supply ?? []).length === 0 && (d.rfq_routes ?? []).length > 0) {
           const initial: Record<string, boolean> = {};
           (d.rfq_routes ?? []).forEach((r: { id: string }) => {
@@ -135,20 +160,15 @@ export default function RfqDetailPage() {
     });
   };
 
-  const setPriceForRoute = (routeId: string, field: "round_trip_price" | "one_way_price", value: number | null) => {
-    setPrices((prev) => {
-      const i = prev.findIndex((p) => p.rfq_route_id === routeId);
-      if (i >= 0) {
-        const next = [...prev];
-        next[i] = { ...next[i], [field]: value };
-        return next;
-      }
-      return [...prev, { rfq_route_id: routeId, round_trip_price: null, one_way_price: null, [field]: value } as PriceRow];
-    });
+  const setPriceForRouteKey = (key: string, field: "round_trip_price" | "one_way_price", value: number | null) => {
+    setPricesByRouteKey((prev) => ({
+      ...prev,
+      [key]: { ...(prev[key] ?? { round_trip_price: null, one_way_price: null }), [field]: value },
+    }));
   };
 
   const getSupply = (routeId: string) => supply.find((s) => s.rfq_route_id === routeId) ?? { supply_round_trip_count: 0, supply_one_way_count: 0, vehicle_year: null };
-  const getPrice = (routeId: string) => prices.find((p) => p.rfq_route_id === routeId) ?? { round_trip_price: null, one_way_price: null };
+  const getPriceByRouteKey = (key: string) => pricesByRouteKey[key] ?? { round_trip_price: null, one_way_price: null };
 
   const hasAnySupply = rfqRoutes.some((r) => {
     const s = getSupply(r.id);
@@ -171,13 +191,15 @@ export default function RfqDetailPage() {
         vehicle_year: no ? undefined : s.vehicle_year ?? undefined,
       };
     });
-    const priceRows = routeIds.map((rid) => {
-      const p = getPrice(rid);
-      const no = noSupply[rid];
+    // 공급이 (0,0)인 노선은 무조건 가격 null 전송(API 규칙). 배차불가 미체크 + 숫자 미입력도 (0,0)으로 전송됨
+    const priceRows = rfqRoutes.map((r, i) => {
+      const supplyRow = supplyRows[i];
+      const hasSupply = (supplyRow.supply_round_trip_count + supplyRow.supply_one_way_count) >= 1;
+      const p = getPriceByRouteKey(routeKey(r));
       return {
-        route_id: rid,
-        round_trip_price: no ? null : p.round_trip_price,
-        one_way_price: no ? null : p.one_way_price,
+        route_id: r.id,
+        round_trip_price: hasSupply ? p.round_trip_price : null,
+        one_way_price: hasSupply ? p.one_way_price : null,
       };
     });
     const valid = supplyRows.every(
@@ -192,6 +214,19 @@ export default function RfqDetailPage() {
     );
     if (!anySupply) {
       setError("최소 한 노선 이상에 공급 대수를 입력해야 합니다.");
+      return;
+    }
+    // 공급이 있는 노선에는 왕복/편도 가격 필수
+    const priceInvalidIdx = supplyRows.findIndex(
+      (s, i) => {
+        const hasSupply = s.supply_round_trip_count + s.supply_one_way_count >= 1;
+        if (!hasSupply) return false;
+        const p = priceRows[i];
+        return p == null || p.round_trip_price == null || p.one_way_price == null || p.round_trip_price < 0 || p.one_way_price < 0;
+      }
+    );
+    if (priceInvalidIdx >= 0) {
+      setError("공급 대수가 있는 모든 노선에 왕복 가격과 편도 가격을 입력해 주세요.");
       return;
     }
     setSubmitting(true);
@@ -217,7 +252,7 @@ export default function RfqDetailPage() {
           </Link>
           <div>
             <h1 className="text-2xl font-semibold">{(rfq.title as string) ?? ""}</h1>
-            <p className="text-muted-foreground">{(rfq.concert_name as string) ?? ""} · {(rfq.venue as string) ?? ""}</p>
+            <p className="text-muted-foreground">{(rfq.venue as string) ?? ""}</p>
           </div>
         </div>
         <StatusBadge status={(rfq.status as string) ?? "open"} />
@@ -304,7 +339,7 @@ export default function RfqDetailPage() {
                       return (
                         <TableRow key={r.id}>
                           <TableCell>
-                            {r.departure_points?.name ?? "-"} → {r.destination}
+                            {r.departure_points?.name ?? "-"}
                           </TableCell>
                           <TableCell>{r.arrival_time_round1 ?? "-"}</TableCell>
                           <TableCell>{r.arrival_time_round2 ?? "-"}</TableCell>
@@ -323,8 +358,8 @@ export default function RfqDetailPage() {
                                     if (e.target.checked) {
                                       setSupplyForRoute(r.id, "supply_round_trip_count", 0);
                                       setSupplyForRoute(r.id, "supply_one_way_count", 0);
-                                      setPriceForRoute(r.id, "round_trip_price", null);
-                                      setPriceForRoute(r.id, "one_way_price", null);
+                                      setPriceForRouteKey(routeKey(r), "round_trip_price", null);
+                                      setPriceForRouteKey(routeKey(r), "one_way_price", null);
                                     }
                                   }}
                                 />
@@ -396,18 +431,21 @@ export default function RfqDetailPage() {
                     </TableHeader>
                     <TableBody>
                       {routes.map((r) => {
-                        const p = getPrice(r.id);
+                        const key = routeKey(r);
+                        const p = getPriceByRouteKey(key);
+                        const s = getSupply(r.id);
                         const no = noSupply[r.id];
+                        const hasSupply = !no && s.supply_round_trip_count + s.supply_one_way_count >= 1;
                         return (
                           <TableRow key={r.id}>
-                            <TableCell>{r.departure_points?.name ?? "-"} → {r.destination}</TableCell>
+                            <TableCell>{r.departure_points?.name ?? "-"}</TableCell>
                             <TableCell>
                               <Input
                                 type="number"
                                 min={0}
-                                disabled={no}
-                                value={no ? "" : (p.round_trip_price ?? "")}
-                                onChange={(e) => setPriceForRoute(r.id, "round_trip_price", parseInt(e.target.value, 10) || null)}
+                                disabled={!hasSupply}
+                                value={!hasSupply ? "" : (p.round_trip_price ?? "")}
+                                onChange={(e) => setPriceForRouteKey(key, "round_trip_price", parseInt(e.target.value, 10) || null)}
                                 className="w-32"
                               />
                             </TableCell>
@@ -415,9 +453,9 @@ export default function RfqDetailPage() {
                               <Input
                                 type="number"
                                 min={0}
-                                disabled={no}
-                                value={no ? "" : (p.one_way_price ?? "")}
-                                onChange={(e) => setPriceForRoute(r.id, "one_way_price", parseInt(e.target.value, 10) || null)}
+                                disabled={!hasSupply}
+                                value={!hasSupply ? "" : (p.one_way_price ?? "")}
+                                onChange={(e) => setPriceForRouteKey(key, "one_way_price", parseInt(e.target.value, 10) || null)}
                                 className="w-32"
                               />
                             </TableCell>
@@ -446,10 +484,10 @@ export default function RfqDetailPage() {
                     </TableHeader>
                     <TableBody>
                       {routes.map((r) => {
-                        const p = getPrice(r.id);
+                        const p = getPriceByRouteKey(routeKey(r));
                         return (
                           <TableRow key={r.id}>
-                            <TableCell>{r.departure_points?.name ?? "-"} → {r.destination}</TableCell>
+                            <TableCell>{r.departure_points?.name ?? "-"}</TableCell>
                             <TableCell>{p.round_trip_price ?? "-"}</TableCell>
                             <TableCell>{p.one_way_price ?? "-"}</TableCell>
                           </TableRow>
@@ -494,7 +532,7 @@ export default function RfqDetailPage() {
                   <TableBody>
                     {(routesByDate[0]?.routes ?? []).map((r) => (
                       <TableRow key={r.id}>
-                        <TableCell>{r.departure_points?.name ?? "-"} → {r.destination}</TableCell>
+                        <TableCell>{r.departure_points?.name ?? "-"}</TableCell>
                         <TableCell>{BUS_LABEL[r.bus_type] ?? r.bus_type}</TableCell>
                         <TableCell>왕복 {r.required_round_trip_count} / 편도 {r.required_one_way_count}</TableCell>
                         {submissions.map((sub) => {
@@ -523,9 +561,9 @@ export default function RfqDetailPage() {
                   <TableBody>
                     {(routesByDate[0]?.routes ?? []).map((r) => (
                       <TableRow key={r.id}>
-                        <TableCell>{r.departure_points?.name ?? "-"} → {r.destination}</TableCell>
+                        <TableCell>{r.departure_points?.name ?? "-"}</TableCell>
                         {submissions.map((sub) => {
-                          const p = prices.find((x) => x.rfq_route_id === r.id && x.supplier_submission_id === sub.id);
+                          const p = routePricesFromApi.find((x) => x.rfq_route_id === r.id && x.supplier_submission_id === sub.id);
                           return (
                             <TableCell key={sub.id}>
                               {p ? `${p.round_trip_price ?? "-"} / ${p.one_way_price ?? "-"}` : "-"}

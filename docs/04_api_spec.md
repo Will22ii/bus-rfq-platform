@@ -46,10 +46,11 @@ Requester만 호출 가능
 
 ## Request
 
+**concert_name** is **removed** from the create payload. Client sends title, venue, quote_deadline_at, dates only. Server persists `concert_name` in DB using `venue` when not provided (for backward compatibility with `rfqs.concert_name` NOT NULL).
+
 
 {
 title,
-concert_name,
 venue,
 quote_deadline_at,
 dates: [

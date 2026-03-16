@@ -9,4 +9,5 @@ if (!supabaseUrl || !supabaseAnonKey) {
   );
 }
 
+// Failed to fetch / AuthRetryableFetchError 발생 시: .env.local의 URL·키 확인, 네트워크·방화벽·CORS 점검
 export const supabase: SupabaseClient = createClient(supabaseUrl, supabaseAnonKey);

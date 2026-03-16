@@ -1,10 +1,15 @@
 import { supabase } from "@/lib/supabase/client";
 
 async function getAccessToken(): Promise<string | null> {
-  const {
-    data: { session },
-  } = await supabase.auth.getSession();
-  return session?.access_token ?? null;
+  try {
+    const {
+      data: { session },
+    } = await supabase.auth.getSession();
+    return session?.access_token ?? null;
+  } catch {
+    // Failed to fetch / AuthRetryableFetchError: 네트워크·Supabase 연결 실패 시 로그인 없음으로 처리
+    return null;
+  }
 }
 
 export async function apiFetch<T>(

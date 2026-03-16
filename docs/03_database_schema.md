@@ -180,6 +180,8 @@ Columns
 - arrival_time_round2 (time)
 - return_departure_time (time)
 
+**Note:** Only two arrival time columns exist. The UI may allow roundCount up to 3 (roundCount max = 3 in UI), but **only the first 2 arrival times are persisted**; there is no arrival_time_round3 in the schema.
+
 버스 타입
 
 - bus_type (enum)

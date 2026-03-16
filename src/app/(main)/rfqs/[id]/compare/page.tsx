@@ -17,7 +17,15 @@ import { useAuth } from "@/hooks/use-auth";
 import { api } from "@/lib/api-client";
 import { ArrowLeft } from "lucide-react";
 
-type Route = { id: string; destination: string; arrival_time_round1: string | null; bus_type: string; required_round_trip_count: number; required_one_way_count: number };
+type Route = {
+  id: string;
+  destination: string;
+  departure_points: { id: string; name: string; region: string } | null;
+  arrival_time_round1: string | null;
+  bus_type: string;
+  required_round_trip_count: number;
+  required_one_way_count: number;
+};
 type Submission = { id: string; company_name?: string; public_phone?: string; supplier_label?: string };
 type Supply = { rfq_route_id: string; supplier_submission_id: string; supply_round_trip_count: number; supply_one_way_count: number };
 type Price = { rfq_route_id: string; supplier_submission_id: string; round_trip_price: number | null; one_way_price: number | null };
@@ -135,7 +143,7 @@ export default function RfqComparePage() {
                 const sel = selections.find((s) => s.rfq_route_id === r.id);
                 return (
                   <TableRow key={r.id}>
-                    <TableCell>{r.destination}</TableCell>
+                    <TableCell>{r.departure_points?.name ?? "-"}</TableCell>
                     <TableCell>{BUS_LABEL[r.bus_type] ?? r.bus_type}</TableCell>
                     <TableCell>왕복 {r.required_round_trip_count} / 편도 {r.required_one_way_count}</TableCell>
                     {submissions.map((sub) => {
@@ -201,7 +209,7 @@ export default function RfqComparePage() {
             <TableBody>
               {routes.map((r) => (
                 <TableRow key={r.id}>
-                  <TableCell>{r.destination}</TableCell>
+                  <TableCell>{r.departure_points?.name ?? "-"}</TableCell>
                   {submissions.map((sub) => {
                     const p = prices.find((x) => x.rfq_route_id === r.id && x.supplier_submission_id === sub.id);
                     return (

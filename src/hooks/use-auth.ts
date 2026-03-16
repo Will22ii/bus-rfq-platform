@@ -36,9 +36,19 @@ export function useAuth(): AuthState {
   const [loading, setLoading] = useState(true);
 
   const fetchMe = useCallback(async () => {
-    const {
-      data: { session },
-    } = await supabase.auth.getSession();
+    let session: { user?: unknown; access_token?: string } | null = null;
+    try {
+      const { data } = await supabase.auth.getSession();
+      session = data?.session ?? null;
+    } catch (e) {
+      // Failed to fetch / AuthRetryableFetchError: 네트워크 불가, Supabase URL 오류, CORS 등
+      setUser(null);
+      setProfile(null);
+      setCompany(null);
+      setIsAdmin(false);
+      setLoading(false);
+      return;
+    }
     if (!session?.user) {
       setUser(null);
       setProfile(null);
@@ -47,9 +57,9 @@ export function useAuth(): AuthState {
       setLoading(false);
       return;
     }
-    setUser(session.user);
+    setUser(session.user as import("@supabase/supabase-js").User);
     const res = await fetch("/api/me", {
-      headers: { Authorization: `Bearer ${session.access_token}` },
+      headers: { Authorization: `Bearer ${(session as { access_token?: string }).access_token ?? ""}` },
     });
     const json = await res.json().catch(() => ({}));
     if (res.ok && json.data) {
@@ -66,12 +76,16 @@ export function useAuth(): AuthState {
 
   useEffect(() => {
     fetchMe();
-    const {
-      data: { subscription },
-    } = supabase.auth.onAuthStateChange(() => {
-      fetchMe();
-    });
-    return () => subscription.unsubscribe();
+    let sub: { unsubscribe: () => void } | undefined;
+    try {
+      const out = supabase.auth.onAuthStateChange(() => {
+        fetchMe();
+      });
+      sub = out?.data?.subscription;
+    } catch {
+      // auth 초기화/연결 실패 시 구독 없이 종료
+    }
+    return () => sub?.unsubscribe?.();
   }, [fetchMe]);
 
   return { user, profile, company, isAdmin, loading, refetch: fetchMe };
