@@ -15,6 +15,13 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/status-badge";
 import { useAuth } from "@/hooks/use-auth";
@@ -55,6 +62,12 @@ function routeKey(r: { departure_point_id: string; destination: string }) {
   return `${r.departure_point_id}|${r.destination}`;
 }
 
+type RegionFilter = "all" | "metro" | "local";
+function filterRoutesByRegion(routes: RfqRoute[], region: RegionFilter): RfqRoute[] {
+  if (region === "all") return routes;
+  return routes.filter((r) => r.departure_points?.region === region);
+}
+
 function buildPricesByRouteKey(
   routes: RfqRoute[],
   priceRows: PriceRow[]
@@ -87,8 +100,9 @@ export default function RfqDetailPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [cancelLoading, setCancelLoading] = useState(false);
+  const [cancelModalOpen, setCancelModalOpen] = useState(false);
   const [error, setError] = useState("");
-  const [noSupply, setNoSupply] = useState<Record<string, boolean>>({});
+  const [regionFilter, setRegionFilter] = useState<RegionFilter>("all");
 
   const isRequester = rfq && company && (rfq.requester_company_id as string) === company.id;
   const mySubmission = !isRequester ? submissions[0] : undefined;
@@ -131,13 +145,6 @@ export default function RfqDetailPage() {
         setSupply(d.rfq_supplier_route_supply ?? []);
         setPricesByRouteKey(buildPricesByRouteKey(d.rfq_routes ?? [], d.rfq_supplier_route_prices ?? []));
         setRoutePricesFromApi(d.rfq_supplier_route_prices ?? []);
-        if ((d.rfq_supplier_route_supply ?? []).length === 0 && (d.rfq_routes ?? []).length > 0) {
-          const initial: Record<string, boolean> = {};
-          (d.rfq_routes ?? []).forEach((r: { id: string }) => {
-            initial[r.id] = false;
-          });
-          setNoSupply(initial);
-        }
       }
       setLoading(false);
     });
@@ -172,43 +179,30 @@ export default function RfqDetailPage() {
 
   const hasAnySupply = rfqRoutes.some((r) => {
     const s = getSupply(r.id);
-    const no = noSupply[r.id];
-    const roundTrip = no ? 0 : s.supply_round_trip_count;
-    const oneWay = no ? 0 : s.supply_one_way_count;
-    return roundTrip + oneWay >= 1;
+    return s.supply_round_trip_count + s.supply_one_way_count >= 1;
   });
 
   const handleSubmit = async () => {
     setError("");
-    const routeIds = rfqRoutes.map((r) => r.id);
-    const supplyRows = routeIds.map((rid) => {
-      const s = getSupply(rid);
-      const no = noSupply[rid];
+    const supplyRows = rfqRoutes.map((r) => {
+      const s = getSupply(r.id);
       return {
-        route_id: rid,
-        supply_round_trip_count: no ? 0 : s.supply_round_trip_count,
-        supply_one_way_count: no ? 0 : s.supply_one_way_count,
-        vehicle_year: no ? undefined : s.vehicle_year ?? undefined,
+        route_id: r.id,
+        supply_round_trip_count: s.supply_round_trip_count,
+        supply_one_way_count: s.supply_one_way_count,
+        vehicle_year: undefined as number | undefined,
       };
     });
-    // 공급이 (0,0)인 노선은 무조건 가격 null 전송(API 규칙). 배차불가 미체크 + 숫자 미입력도 (0,0)으로 전송됨
+    // 부분 공급: 해당 공급이 0이면 해당 가격 null, 1 이상이면 가격 전송
     const priceRows = rfqRoutes.map((r, i) => {
-      const supplyRow = supplyRows[i];
-      const hasSupply = (supplyRow.supply_round_trip_count + supplyRow.supply_one_way_count) >= 1;
+      const sr = supplyRows[i];
       const p = getPriceByRouteKey(routeKey(r));
       return {
         route_id: r.id,
-        round_trip_price: hasSupply ? p.round_trip_price : null,
-        one_way_price: hasSupply ? p.one_way_price : null,
+        round_trip_price: sr.supply_round_trip_count >= 1 ? p.round_trip_price : null,
+        one_way_price: sr.supply_one_way_count >= 1 ? p.one_way_price : null,
       };
     });
-    const valid = supplyRows.every(
-      (s) => s.supply_round_trip_count + s.supply_one_way_count >= 1 || (s.supply_round_trip_count === 0 && s.supply_one_way_count === 0)
-    );
-    if (!valid) {
-      setError("각 노선에 공급 대수를 입력하거나 배차불가를 선택하세요.");
-      return;
-    }
     const anySupply = supplyRows.some(
       (s) => s.supply_round_trip_count + s.supply_one_way_count >= 1
     );
@@ -216,17 +210,15 @@ export default function RfqDetailPage() {
       setError("최소 한 노선 이상에 공급 대수를 입력해야 합니다.");
       return;
     }
-    // 공급이 있는 노선에는 왕복/편도 가격 필수
-    const priceInvalidIdx = supplyRows.findIndex(
-      (s, i) => {
-        const hasSupply = s.supply_round_trip_count + s.supply_one_way_count >= 1;
-        if (!hasSupply) return false;
-        const p = priceRows[i];
-        return p == null || p.round_trip_price == null || p.one_way_price == null || p.round_trip_price < 0 || p.one_way_price < 0;
-      }
-    );
+    // 부분 공급: 왕복 공급 있으면 왕복 가격 필수, 편도 공급 있으면 편도 가격 필수
+    const priceInvalidIdx = supplyRows.findIndex((s, i) => {
+      const p = priceRows[i];
+      if (s.supply_round_trip_count >= 1 && (p.round_trip_price == null || p.round_trip_price < 0)) return true;
+      if (s.supply_one_way_count >= 1 && (p.one_way_price == null || p.one_way_price < 0)) return true;
+      return false;
+    });
     if (priceInvalidIdx >= 0) {
-      setError("공급 대수가 있는 모든 노선에 왕복 가격과 편도 가격을 입력해 주세요.");
+      setError("공급이 있는 항목에는 해당 가격을 입력해 주세요. (왕복 공급 시 왕복 가격, 편도 공급 시 편도 가격)");
       return;
     }
     setSubmitting(true);
@@ -254,41 +246,18 @@ export default function RfqDetailPage() {
             <h1 className="text-2xl font-semibold">{(rfq.title as string) ?? ""}</h1>
             <p className="text-muted-foreground">{(rfq.venue as string) ?? ""}</p>
           </div>
+          <StatusBadge status={(rfq.status as string) ?? "open"} />
         </div>
-        <StatusBadge status={(rfq.status as string) ?? "open"} />
+        {isRequester && (rfq.status === "open" || rfq.status === "in_review") && (
+          <Button
+            variant="destructive"
+            disabled={cancelLoading}
+            onClick={() => setCancelModalOpen(true)}
+          >
+            RFQ 취소
+          </Button>
+        )}
       </div>
-
-      {isRequester && (rfq.status === "open" || rfq.status === "in_review" || rfq.status === "completed") && (
-        <div className="flex flex-wrap items-center gap-2">
-          {rfq.status === "open" && (
-            <Link href={`/rfqs/${id}/compare`}>
-              <Button variant="outline">견적 비교 보기</Button>
-            </Link>
-          )}
-          {(rfq.status === "in_review" || rfq.status === "completed") && (
-            <Link href={`/rfqs/${id}/compare`}>
-              <Button>견적 비교 및 공급사 선택</Button>
-            </Link>
-          )}
-          {(rfq.status === "open" || rfq.status === "in_review") && (
-            <Button
-              variant="destructive"
-              disabled={cancelLoading}
-              onClick={async () => {
-                if (!confirm("이 RFQ를 취소하시겠습니까?")) return;
-                setCancelLoading(true);
-                setError("");
-                const res = await api.post(`/rfqs/${id}/cancel`, {});
-                setCancelLoading(false);
-                if (res.error) setError(res.error);
-                else window.location.reload();
-              }}
-            >
-              {cancelLoading ? "취소 중..." : "RFQ 취소"}
-            </Button>
-          )}
-        </div>
-      )}
 
       <Tabs defaultValue={rfqDates[0]?.id ?? ""}>
         <TabsList>
@@ -298,113 +267,119 @@ export default function RfqDetailPage() {
             </TabsTrigger>
           ))}
         </TabsList>
-        {routesByDate.map(({ date, routes }) => (
-          <TabsContent key={date.id} value={date.id}>
+        {routesByDate.map(({ date, routes }) => {
+          const isSupplier = canSubmit || !!mySubmission;
+          const displayedRoutes = isSupplier ? filterRoutesByRegion(routes, regionFilter) : routes;
+          return (
+          <TabsContent key={date.id} value={date.id} className="space-y-4">
+            {isSupplier && (
+              <Tabs value={regionFilter} onValueChange={(v) => setRegionFilter(v as RegionFilter)}>
+                <TabsList>
+                  <TabsTrigger value="all">전체</TabsTrigger>
+                  <TabsTrigger value="metro">수도권</TabsTrigger>
+                  <TabsTrigger value="local">지방</TabsTrigger>
+                </TabsList>
+              </Tabs>
+            )}
             <Card>
               <CardHeader>
                 <CardTitle>노선 테이블</CardTitle>
               </CardHeader>
-              <CardContent>
+              <CardContent className="p-0 pl-6">
                 <Table>
                   <TableHeader>
                     <TableRow>
-                      <TableHead>노선</TableHead>
-                      <TableHead>1회차 도착</TableHead>
-                      <TableHead>2회차 도착</TableHead>
-                      <TableHead>귀가 출발</TableHead>
-                      <TableHead>버스 타입</TableHead>
-                      <TableHead>왕복 필요</TableHead>
-                      <TableHead>편도 필요</TableHead>
+                      <TableHead className="pr-4">노선</TableHead>
+                      <TableHead className="pr-4">1회차 도착</TableHead>
+                      <TableHead className="pr-4">2회차 도착</TableHead>
+                      <TableHead className="pr-4">귀가 출발</TableHead>
+                      <TableHead className="pr-4">버스 타입</TableHead>
+                      <TableHead className="pr-4">왕복 필요 대수</TableHead>
+                      <TableHead className="border-r-2 border-border pr-4 shadow-[2px_0_0_0_hsl(var(--border))]">편도 필요 대수</TableHead>
                       {canSubmit && (
                         <>
-                          <TableHead>배차불가</TableHead>
-                          <TableHead>공급 왕복</TableHead>
-                          <TableHead>공급 편도</TableHead>
-                          <TableHead>연식</TableHead>
+                          <TableHead className="pl-5 pr-4">왕복 공급 대수</TableHead>
+                          <TableHead className="pr-4">편도 공급 대수</TableHead>
                         </>
                       )}
                       {mySubmission && !canSubmit && (
                         <>
-                          <TableHead>공급 왕복</TableHead>
-                          <TableHead>공급 편도</TableHead>
-                          <TableHead>연식</TableHead>
+                          <TableHead className="pl-5 pr-4">왕복 공급 대수</TableHead>
+                          <TableHead className="pr-4">편도 공급 대수</TableHead>
                         </>
                       )}
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {routes.map((r) => {
+                    {displayedRoutes.map((r) => {
                       const s = getSupply(r.id);
-                      const no = noSupply[r.id];
+                      const roundOptions = Array.from({ length: r.required_round_trip_count + 1 }, (_, i) => ({ value: String(i), label: i === 0 ? "배차불가" : `${i}` }));
+                      const oneWayOptions = Array.from({ length: r.required_one_way_count + 1 }, (_, i) => ({ value: String(i), label: i === 0 ? "배차불가" : `${i}` }));
+                      const roundDisabled = r.required_round_trip_count === 0;
+                      const oneWayDisabled = r.required_one_way_count === 0;
                       return (
                         <TableRow key={r.id}>
-                          <TableCell>
+                          <TableCell className="pr-4">
                             {r.departure_points?.name ?? "-"}
                           </TableCell>
-                          <TableCell>{r.arrival_time_round1 ?? "-"}</TableCell>
-                          <TableCell>{r.arrival_time_round2 ?? "-"}</TableCell>
-                          <TableCell>{r.return_departure_time ?? "-"}</TableCell>
-                          <TableCell>{BUS_LABEL[r.bus_type] ?? r.bus_type}</TableCell>
-                          <TableCell>{r.required_round_trip_count}</TableCell>
-                          <TableCell>{r.required_one_way_count}</TableCell>
+                          <TableCell className="pr-4">{r.arrival_time_round1 ?? "-"}</TableCell>
+                          <TableCell className="pr-4">{r.arrival_time_round2 ?? "-"}</TableCell>
+                          <TableCell className="pr-4">{r.return_departure_time ?? "-"}</TableCell>
+                          <TableCell className="pr-4">{BUS_LABEL[r.bus_type] ?? r.bus_type}</TableCell>
+                          <TableCell className="pr-4">{r.required_round_trip_count}</TableCell>
+                          <TableCell className="border-r-2 border-border pr-4 shadow-[2px_0_0_0_hsl(var(--border))]">{r.required_one_way_count}</TableCell>
                           {canSubmit && (
                             <>
-                              <TableCell>
-                                <input
-                                  type="checkbox"
-                                  checked={no}
-                                  onChange={(e) => {
-                                    setNoSupply((prev) => ({ ...prev, [r.id]: e.target.checked }));
-                                    if (e.target.checked) {
-                                      setSupplyForRoute(r.id, "supply_round_trip_count", 0);
-                                      setSupplyForRoute(r.id, "supply_one_way_count", 0);
-                                      setPriceForRouteKey(routeKey(r), "round_trip_price", null);
-                                      setPriceForRouteKey(routeKey(r), "one_way_price", null);
-                                    }
+                              <TableCell className="pl-5">
+                                <Select
+                                  value={String(s.supply_round_trip_count)}
+                                  onValueChange={(v) => {
+                                    const n = parseInt(v ?? "", 10) ?? 0;
+                                    setSupplyForRoute(r.id, "supply_round_trip_count", n);
+                                    if (n === 0) setPriceForRouteKey(routeKey(r), "round_trip_price", null);
                                   }}
-                                />
+                                  disabled={roundDisabled}
+                                >
+                                  <SelectTrigger className="w-[100px]">
+                                    <SelectValue placeholder="선택" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {roundOptions.map((opt) => (
+                                      <SelectItem key={opt.value} value={opt.value}>
+                                        {opt.label}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
                               </TableCell>
-                              <TableCell>
-                                <Input
-                                  type="number"
-                                  min={0}
-                                  max={r.required_round_trip_count}
-                                  disabled={no}
-                                  value={no ? 0 : s.supply_round_trip_count}
-                                  onChange={(e) => setSupplyForRoute(r.id, "supply_round_trip_count", parseInt(e.target.value, 10) || 0)}
-                                  className="w-20"
-                                />
-                              </TableCell>
-                              <TableCell>
-                                <Input
-                                  type="number"
-                                  min={0}
-                                  max={r.required_one_way_count}
-                                  disabled={no}
-                                  value={no ? 0 : s.supply_one_way_count}
-                                  onChange={(e) => setSupplyForRoute(r.id, "supply_one_way_count", parseInt(e.target.value, 10) || 0)}
-                                  className="w-20"
-                                />
-                              </TableCell>
-                              <TableCell>
-                                <Input
-                                  type="number"
-                                  min={1990}
-                                  max={2030}
-                                  disabled={no}
-                                  placeholder="예: 2022"
-                                  value={no ? "" : (s.vehicle_year ?? "")}
-                                  onChange={(e) => setSupplyForRoute(r.id, "vehicle_year", parseInt(e.target.value, 10) || 0)}
-                                  className="w-20"
-                                />
+                              <TableCell className="pr-4">
+                                <Select
+                                  value={String(s.supply_one_way_count)}
+                                  onValueChange={(v) => {
+                                    const n = parseInt(v ?? "", 10) ?? 0;
+                                    setSupplyForRoute(r.id, "supply_one_way_count", n);
+                                    if (n === 0) setPriceForRouteKey(routeKey(r), "one_way_price", null);
+                                  }}
+                                  disabled={oneWayDisabled}
+                                >
+                                  <SelectTrigger className="w-[100px]">
+                                    <SelectValue placeholder="선택" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {oneWayOptions.map((opt) => (
+                                      <SelectItem key={opt.value} value={opt.value}>
+                                        {opt.label}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
                               </TableCell>
                             </>
                           )}
                           {mySubmission && !canSubmit && (
                             <>
-                              <TableCell>{s.supply_round_trip_count}</TableCell>
-                              <TableCell>{s.supply_one_way_count}</TableCell>
-                              <TableCell>{s.vehicle_year ?? "-"}</TableCell>
+                              <TableCell className="pl-5">{s.supply_round_trip_count === 0 ? "배차불가" : s.supply_round_trip_count}</TableCell>
+                              <TableCell className="pr-4">{s.supply_one_way_count === 0 ? "배차불가" : s.supply_one_way_count}</TableCell>
                             </>
                           )}
                         </TableRow>
@@ -420,41 +395,41 @@ export default function RfqDetailPage() {
                 <CardHeader>
                   <CardTitle>가격 (노선 기준, 날짜 무관)</CardTitle>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="p-0 pl-6">
                   <Table>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>노선</TableHead>
-                        <TableHead>왕복 공급가</TableHead>
-                        <TableHead>편도 공급가</TableHead>
+                        <TableHead className="pr-4">노선</TableHead>
+                        <TableHead className="pr-4">왕복 공급가</TableHead>
+                        <TableHead className="pr-4">편도 공급가</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {routes.map((r) => {
+                      {displayedRoutes.map((r) => {
                         const key = routeKey(r);
                         const p = getPriceByRouteKey(key);
                         const s = getSupply(r.id);
-                        const no = noSupply[r.id];
-                        const hasSupply = !no && s.supply_round_trip_count + s.supply_one_way_count >= 1;
+                        const roundPriceDisabled = r.required_round_trip_count === 0 || s.supply_round_trip_count === 0;
+                        const oneWayPriceDisabled = r.required_one_way_count === 0 || s.supply_one_way_count === 0;
                         return (
                           <TableRow key={r.id}>
-                            <TableCell>{r.departure_points?.name ?? "-"}</TableCell>
-                            <TableCell>
+                            <TableCell className="pr-4">{r.departure_points?.name ?? "-"}</TableCell>
+                            <TableCell className="pr-4">
                               <Input
                                 type="number"
                                 min={0}
-                                disabled={!hasSupply}
-                                value={!hasSupply ? "" : (p.round_trip_price ?? "")}
+                                disabled={roundPriceDisabled}
+                                value={roundPriceDisabled ? "" : (p.round_trip_price ?? "")}
                                 onChange={(e) => setPriceForRouteKey(key, "round_trip_price", parseInt(e.target.value, 10) || null)}
                                 className="w-32"
                               />
                             </TableCell>
-                            <TableCell>
+                            <TableCell className="pr-4">
                               <Input
                                 type="number"
                                 min={0}
-                                disabled={!hasSupply}
-                                value={!hasSupply ? "" : (p.one_way_price ?? "")}
+                                disabled={oneWayPriceDisabled}
+                                value={oneWayPriceDisabled ? "" : (p.one_way_price ?? "")}
                                 onChange={(e) => setPriceForRouteKey(key, "one_way_price", parseInt(e.target.value, 10) || null)}
                                 className="w-32"
                               />
@@ -469,113 +444,65 @@ export default function RfqDetailPage() {
             )}
 
             {mySubmission && !canSubmit && (
-              <Card className="mt-6">
+              <Card className="mt-6 max-w-md">
                 <CardHeader>
                   <CardTitle>제출 가격</CardTitle>
                 </CardHeader>
-                <CardContent>
-                  <Table>
+                <CardContent className="p-0 pl-6">
+                  <table className="w-full table-fixed border-collapse text-sm">
+                    <colgroup>
+                      <col style={{ width: 72 }} />
+                      <col style={{ width: 120 }} />
+                      <col style={{ width: 120 }} />
+                    </colgroup>
                     <TableHeader>
                       <TableRow>
-                        <TableHead>노선</TableHead>
-                        <TableHead>왕복 공급가</TableHead>
-                        <TableHead>편도 공급가</TableHead>
+                        <TableHead className="min-w-0 pr-4" style={{ width: 72 }}>노선</TableHead>
+                        <TableHead className="min-w-0 px-4" style={{ width: 120 }}>왕복 공급가</TableHead>
+                        <TableHead className="min-w-0 pl-4 pr-4" style={{ width: 120 }}>편도 공급가</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
-                      {routes.map((r) => {
+                      {displayedRoutes.map((r) => {
                         const p = getPriceByRouteKey(routeKey(r));
                         return (
                           <TableRow key={r.id}>
-                            <TableCell>{r.departure_points?.name ?? "-"}</TableCell>
-                            <TableCell>{p.round_trip_price ?? "-"}</TableCell>
-                            <TableCell>{p.one_way_price ?? "-"}</TableCell>
+                            <TableCell className="min-w-0 pr-4" style={{ width: 72 }}>{r.departure_points?.name ?? "-"}</TableCell>
+                            <TableCell className="min-w-0 px-4" style={{ width: 120 }}>{p.round_trip_price ?? "-"}</TableCell>
+                            <TableCell className="min-w-0 pl-4 pr-4" style={{ width: 120 }}>{p.one_way_price ?? "-"}</TableCell>
                           </TableRow>
                         );
                       })}
                     </TableBody>
-                  </Table>
+                  </table>
                   <p className="mt-2 text-sm text-muted-foreground">제출 완료 · 수정 불가</p>
                 </CardContent>
               </Card>
             )}
           </TabsContent>
-        ))}
+          ); })}
       </Tabs>
 
       {isRequester && (rfq.status === "open" || rfq.status === "in_review" || rfq.status === "completed") && (
         <Card>
           <CardHeader>
             <CardTitle>참여 공급사 견적</CardTitle>
-            <CardDescription>
-              {submissions.length === 0
-                ? "아직 제출된 견적이 없습니다."
-                : `제출된 견적 ${submissions.length}건 (마스킹 처리됨)`}
-            </CardDescription>
           </CardHeader>
-          <CardContent>
-            {submissions.length > 0 && (
-              <div className="space-y-6 overflow-x-auto">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="min-w-[140px]">노선</TableHead>
-                      <TableHead>버스 타입</TableHead>
-                      <TableHead>필요 대수</TableHead>
-                      {submissions.map((sub) => (
-                        <TableHead key={sub.id} className="min-w-[100px]">
-                          {sub.supplier_label ?? sub.company_name ?? "공급사"}
-                        </TableHead>
-                      ))}
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {(routesByDate[0]?.routes ?? []).map((r) => (
-                      <TableRow key={r.id}>
-                        <TableCell>{r.departure_points?.name ?? "-"}</TableCell>
-                        <TableCell>{BUS_LABEL[r.bus_type] ?? r.bus_type}</TableCell>
-                        <TableCell>왕복 {r.required_round_trip_count} / 편도 {r.required_one_way_count}</TableCell>
-                        {submissions.map((sub) => {
-                          const s = supply.find((x) => x.rfq_route_id === r.id && (x as { supplier_submission_id?: string }).supplier_submission_id === sub.id);
-                          return (
-                            <TableCell key={sub.id}>
-                              {s ? `왕복 ${s.supply_round_trip_count} / 편도 ${s.supply_one_way_count}` : "-"}
-                            </TableCell>
-                          );
-                        })}
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead className="min-w-[140px]">노선</TableHead>
-                      {submissions.map((sub) => (
-                        <TableHead key={sub.id} className="min-w-[100px]">
-                          {sub.supplier_label ?? sub.company_name ?? "공급사"} 왕복/편도
-                        </TableHead>
-                      ))}
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {(routesByDate[0]?.routes ?? []).map((r) => (
-                      <TableRow key={r.id}>
-                        <TableCell>{r.departure_points?.name ?? "-"}</TableCell>
-                        {submissions.map((sub) => {
-                          const p = routePricesFromApi.find((x) => x.rfq_route_id === r.id && x.supplier_submission_id === sub.id);
-                          return (
-                            <TableCell key={sub.id}>
-                              {p ? `${p.round_trip_price ?? "-"} / ${p.one_way_price ?? "-"}` : "-"}
-                            </TableCell>
-                          );
-                        })}
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </div>
-            )}
+          <CardContent className="space-y-4">
+            <p className="text-base">
+              {submissions.length === 0 ? (
+                "아직 제출된 견적이 없습니다."
+              ) : (
+                <>
+                  현재 <span className="font-bold text-primary">{submissions.length}개</span>의 견적이 제출되었습니다.
+                </>
+              )}
+            </p>
+            <Link href={`/rfqs/${id}/compare`}>
+              <Button>
+                견적 비교하기 →
+              </Button>
+            </Link>
           </CardContent>
         </Card>
       )}
@@ -586,6 +513,40 @@ export default function RfqDetailPage() {
           <Button onClick={handleSubmit} disabled={submitting || !hasAnySupply}>
             {submitting ? "제출 중..." : "견적 제출하기"}
           </Button>
+        </div>
+      )}
+
+      {cancelModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center">
+          <div className="fixed inset-0 bg-black/50" aria-hidden onClick={() => setCancelModalOpen(false)} />
+          <div className="relative z-10 w-full max-w-sm rounded-lg border bg-card p-6 shadow-lg">
+            <p className="text-center text-base font-medium">정말 취소하겠습니까?</p>
+            <div className="mt-6 flex justify-center gap-3">
+              <Button
+                variant="outline"
+                onClick={() => setCancelModalOpen(false)}
+              >
+                아니오
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={cancelLoading}
+                onClick={async () => {
+                  setCancelLoading(true);
+                  setError("");
+                  const res = await api.post(`/rfqs/${id}/cancel`, {});
+                  setCancelLoading(false);
+                  if (res.error) setError(res.error);
+                  else {
+                    setCancelModalOpen(false);
+                    window.location.reload();
+                  }
+                }}
+              >
+                {cancelLoading ? "취소 중..." : "네"}
+              </Button>
+            </div>
+          </div>
         </div>
       )}
     </div>

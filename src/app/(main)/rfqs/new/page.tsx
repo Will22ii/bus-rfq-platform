@@ -19,7 +19,7 @@ import {
   type RouteRequirement,
   type ScheduleTimes,
 } from "@/components/rfq-create";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, ChevronRight } from "lucide-react";
 
 function getScheduleForDate(schedules: Schedule[], date: string): Schedule | undefined {
   return schedules.find((s) => s.assignedDates.includes(date));
@@ -237,6 +237,16 @@ export default function RfqNewPage() {
         <h1 className="text-2xl font-semibold">RFQ 생성</h1>
       </div>
 
+      <div className="flex items-center gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2 text-sm">
+        <span className={step === 1 ? "font-semibold text-foreground" : "text-muted-foreground"}>
+          1단계 기본 정보
+        </span>
+        <ChevronRight className="size-4 text-muted-foreground" />
+        <span className={step === 2 ? "font-semibold text-foreground" : "text-muted-foreground"}>
+          2단계 노선 요건
+        </span>
+      </div>
+
       {step === 1 && (
         <Card>
           <CardHeader>
@@ -246,22 +256,24 @@ export default function RfqNewPage() {
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-6">
-            <RFQBasicInfo
-              title={title}
-              venue={venue}
-              quoteDeadlineAt={quoteDeadlineAt}
-              deadlineError={deadlineError || undefined}
-              onTitleChange={setTitle}
-              onVenueChange={setVenue}
-              onQuoteDeadlineAtChange={setQuoteDeadlineAt}
-            />
-            <ServiceDateSelector
-              selectedDates={serviceDates}
-              dateInput={dateInput}
-              onDateInputChange={setDateInput}
-              onAddDate={addDate}
-              onRemoveDate={removeDate}
-            />
+            <div className="max-w-md space-y-6">
+              <RFQBasicInfo
+                title={title}
+                venue={venue}
+                quoteDeadlineAt={quoteDeadlineAt}
+                deadlineError={deadlineError || undefined}
+                onTitleChange={setTitle}
+                onVenueChange={setVenue}
+                onQuoteDeadlineAtChange={setQuoteDeadlineAt}
+              />
+              <ServiceDateSelector
+                selectedDates={serviceDates}
+                dateInput={dateInput}
+                onDateInputChange={setDateInput}
+                onAddDate={addDate}
+                onRemoveDate={removeDate}
+              />
+            </div>
             <ScheduleGroupEditor
               schedules={schedules}
               serviceDates={serviceDates}
@@ -279,6 +291,7 @@ export default function RfqNewPage() {
             )}
             <Button onClick={goToStep2} disabled={!canGoStep2}>
               다음: 2단계 노선 요건 입력
+              <ChevronRight className="ml-1 size-4" />
             </Button>
           </CardContent>
         </Card>

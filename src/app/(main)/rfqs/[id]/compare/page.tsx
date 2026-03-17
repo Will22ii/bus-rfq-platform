@@ -13,12 +13,15 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/hooks/use-auth";
 import { api } from "@/lib/api-client";
 import { ArrowLeft } from "lucide-react";
 
+type RfqDate = { id: string; rfq_id: string; service_date: string; sort_order: number };
 type Route = {
   id: string;
+  rfq_date_id: string;
   destination: string;
   departure_points: { id: string; name: string; region: string } | null;
   arrival_time_round1: string | null;
@@ -33,12 +36,32 @@ type Selection = { rfq_route_id: string; selection_status: string; selected_supp
 
 const BUS_LABEL: Record<string, string> = { "44_seat": "44인승", "31_seat": "31인승", "28_seat": "28인승" };
 
+/** 좌측 고정: 노선, 버스타입, 필요대수(간격·필요대수 폭 확대). 가변: 공급사당 120. 우측 고정: 선택 180 */
+const W_NODE = 44;
+const W_BUS = 52;
+const W_REQ = 100;
+const W_SUPPLIER = 120;
+const W_SELECT = 180;
+/** 노선별 가격 테이블: 노선 열(가변영역과 간격 크게 축소) */
+const W_NODE_PRICE = 24;
+const STICKY_LEFT_2 = W_NODE;
+const STICKY_LEFT_3 = W_NODE + W_BUS;
+
+type RegionFilter = "all" | "metro" | "local";
+
+function filterRoutesByRegion(routes: Route[], region: RegionFilter): Route[] {
+  if (region === "all") return routes;
+  return routes.filter((r) => r.departure_points?.region === region);
+}
+
 export default function RfqComparePage() {
   const params = useParams();
   const id = params.id as string;
   const { company } = useAuth();
+  const [regionFilter, setRegionFilter] = useState<RegionFilter>("all");
   const [data, setData] = useState<{
     status?: string;
+    rfq_dates: RfqDate[];
     routes: Route[];
     supplier_submissions: Submission[];
     route_supply: Supply[];
@@ -50,11 +73,14 @@ export default function RfqComparePage() {
   const [error, setError] = useState("");
 
   const isCompleted = data?.status === "completed";
-  const isReadOnly = data?.status === "open";
+  const isCancelled = data?.status === "cancelled";
+  /** open: 비교만 가능(선택/완료 불가). cancelled: 선택/완료 불가. in_review/completed: 선택·완료 가능 */
+  const isReadOnly = data?.status === "open" || isCancelled;
 
   useEffect(() => {
     if (!id) return;
     api.get<{
+      rfq_dates: RfqDate[];
       routes: Route[];
       supplier_submissions: Submission[];
       route_supply: Supply[];
@@ -99,11 +125,14 @@ export default function RfqComparePage() {
   if (!data) return null;
 
   const routes = data.routes ?? [];
+  const rfqDates = data.rfq_dates ?? [];
   const submissions = data.supplier_submissions ?? [];
   const supply = data.route_supply ?? [];
   const prices = data.route_prices ?? [];
   const selections = data.route_selections ?? [];
   const allSelected = routes.length > 0 && routes.every((r) => selections.some((s) => s.rfq_route_id === r.id));
+
+  const routesByDateId = (dateId: string) => routes.filter((r) => r.rfq_date_id === dateId);
 
   return (
     <div className="space-y-6">
@@ -119,111 +148,162 @@ export default function RfqComparePage() {
         </h1>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle>노선별 공급 현황</CardTitle>
-        </CardHeader>
-        <CardContent className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="min-w-[120px]">노선</TableHead>
-                <TableHead>버스 타입</TableHead>
-                <TableHead>필요 대수</TableHead>
-                {submissions.map((sub) => (
-                  <TableHead key={sub.id} className="min-w-[100px]">
-                    {sub.supplier_label ?? sub.company_name ?? "공급사"}
-                  </TableHead>
-                ))}
-                {!isReadOnly && <TableHead className="min-w-[180px]">공급사 선택</TableHead>}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {routes.map((r) => {
-                const sel = selections.find((s) => s.rfq_route_id === r.id);
-                return (
-                  <TableRow key={r.id}>
-                    <TableCell>{r.departure_points?.name ?? "-"}</TableCell>
-                    <TableCell>{BUS_LABEL[r.bus_type] ?? r.bus_type}</TableCell>
-                    <TableCell>왕복 {r.required_round_trip_count} / 편도 {r.required_one_way_count}</TableCell>
-                    {submissions.map((sub) => {
-                      const s = supply.find((x) => x.rfq_route_id === r.id && x.supplier_submission_id === sub.id);
-                      return (
-                        <TableCell key={sub.id}>
-                          {s ? `왕복 ${s.supply_round_trip_count} / 편도 ${s.supply_one_way_count}` : "-"}
-                        </TableCell>
-                      );
-                    })}
-                    {!isReadOnly && (
-                      <TableCell>
-                        <div className="flex flex-col gap-1">
-                          {submissions.map((sub) => (
-                            <label key={sub.id} className="flex items-center gap-2 text-sm">
-                              <input
-                                type="radio"
-                                name={`select-${r.id}`}
-                                checked={sel?.selected_supplier_submission_id === sub.id}
-                                onChange={() => handleSelect(r.id, sub.id)}
-                                disabled={!!submitting}
-                              />
-                              {sub.supplier_label ?? sub.company_name ?? "공급사"}
-                            </label>
-                          ))}
-                          <label className="flex items-center gap-2 text-sm">
-                            <input
-                              type="radio"
-                              name={`select-${r.id}`}
-                              checked={sel?.selection_status === "none"}
-                              onChange={() => handleSelect(r.id, null)}
-                              disabled={!!submitting}
-                            />
-                            선택 안함
-                          </label>
-                        </div>
-                      </TableCell>
-                    )}
-                  </TableRow>
-                );
-              })}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
-
-      <Card>
-        <CardHeader>
-          <CardTitle>노선별 가격</CardTitle>
-        </CardHeader>
-        <CardContent className="overflow-x-auto">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead className="min-w-[120px]">노선</TableHead>
-                {submissions.map((sub) => (
-                  <TableHead key={sub.id} className="min-w-[100px]">
-                    {sub.supplier_label ?? sub.company_name ?? "공급사"} 왕복/편도
-                  </TableHead>
-                ))}
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {routes.map((r) => (
-                <TableRow key={r.id}>
-                  <TableCell>{r.departure_points?.name ?? "-"}</TableCell>
-                  {submissions.map((sub) => {
-                    const p = prices.find((x) => x.rfq_route_id === r.id && x.supplier_submission_id === sub.id);
+      {rfqDates.length === 0 ? (
+        <p className="text-muted-foreground">운행 날짜가 없습니다.</p>
+      ) : (
+        <Tabs defaultValue={rfqDates[0]?.id ?? ""} className="space-y-4">
+          <TabsList>
+            {rfqDates.map((d) => (
+              <TabsTrigger key={d.id} value={d.id}>
+                {d.service_date}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+          {rfqDates.map((date) => {
+            const dateRoutes = routesByDateId(date.id);
+            return (
+              <TabsContent key={date.id} value={date.id} className="space-y-4">
+                <Tabs value={regionFilter} onValueChange={(v) => setRegionFilter(v as RegionFilter)}>
+                  <TabsList>
+                    <TabsTrigger value="all">전체</TabsTrigger>
+                    <TabsTrigger value="metro">수도권</TabsTrigger>
+                    <TabsTrigger value="local">지방</TabsTrigger>
+                  </TabsList>
+                  {(["all", "metro", "local"] as const).map((region) => {
+                    const displayedRoutes = filterRoutesByRegion(dateRoutes, region);
                     return (
-                      <TableCell key={sub.id}>
-                        {p ? `${p.round_trip_price ?? "-"} / ${p.one_way_price ?? "-"}` : "-"}
-                      </TableCell>
+                      <TabsContent key={region} value={region} className="space-y-6 mt-4">
+                        <Card>
+                          <CardHeader>
+                            <CardTitle>노선별 공급 현황</CardTitle>
+                          </CardHeader>
+                          <CardContent className="overflow-x-auto p-0 pl-6">
+                            <table className="min-w-max table-fixed border-collapse text-sm">
+                              <colgroup>
+                                <col style={{ width: W_NODE }} />
+                                <col style={{ width: W_BUS }} />
+                                <col style={{ width: W_REQ }} />
+                                {submissions.map((sub) => (
+                                  <col key={sub.id} style={{ width: W_SUPPLIER }} />
+                                ))}
+                                {!isReadOnly && <col style={{ width: W_SELECT }} />}
+                              </colgroup>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead className="sticky left-0 z-10 bg-card pr-[20px]" style={{ width: W_NODE, minWidth: W_NODE }}>노선</TableHead>
+                                  <TableHead className="sticky z-10 bg-card pr-[20px]" style={{ left: STICKY_LEFT_2, width: W_BUS, minWidth: W_BUS }}>버스 타입</TableHead>
+                                  <TableHead className="sticky z-10 border-r-2 border-border bg-card pr-[28px] shadow-[2px_0_0_0_hsl(var(--border))]" style={{ left: STICKY_LEFT_3, width: W_REQ, minWidth: W_REQ }}>필요 대수</TableHead>
+                                  {submissions.map((sub) => (
+                                    <TableHead key={sub.id} className="min-w-[120px] shrink-0" style={{ width: W_SUPPLIER }}>
+                                      {sub.supplier_label ?? sub.company_name ?? "공급사"}
+                                    </TableHead>
+                                  ))}
+                                  {!isReadOnly && (
+                                    <TableHead className="sticky right-0 z-10 min-w-[180px] border-l-2 border-border bg-card shadow-[-2px_0_0_0_hsl(var(--border))]" style={{ width: W_SELECT }}>공급사 선택</TableHead>
+                                  )}
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {displayedRoutes.map((r) => {
+                                  const sel = selections.find((s) => s.rfq_route_id === r.id);
+                                  return (
+                                    <TableRow key={r.id}>
+                                      <TableCell className="sticky left-0 z-[1] bg-background pr-[20px]" style={{ width: W_NODE }}>{r.departure_points?.name ?? "-"}</TableCell>
+                                      <TableCell className="sticky z-[1] bg-background pr-[20px]" style={{ left: STICKY_LEFT_2, width: W_BUS }}>{BUS_LABEL[r.bus_type] ?? r.bus_type}</TableCell>
+                                      <TableCell className="sticky z-[1] min-w-0 border-r-2 border-border bg-background pr-[28px] whitespace-nowrap" style={{ left: STICKY_LEFT_3, width: W_REQ }}>왕복 {r.required_round_trip_count} / 편도 {r.required_one_way_count}</TableCell>
+                                      {submissions.map((sub) => {
+                                        const s = supply.find((x) => x.rfq_route_id === r.id && x.supplier_submission_id === sub.id);
+                                        return (
+                                          <TableCell key={sub.id} className="shrink-0" style={{ width: W_SUPPLIER }}>
+                                            {s ? `왕복 ${s.supply_round_trip_count} / 편도 ${s.supply_one_way_count}` : "-"}
+                                          </TableCell>
+                                        );
+                                      })}
+                                      {!isReadOnly && (
+                                        <TableCell className="sticky right-0 z-[1] border-l-2 border-border bg-background" style={{ width: W_SELECT }}>
+                                          <div className="flex flex-col gap-1">
+                                            {submissions.map((sub) => (
+                                              <label key={sub.id} className="flex items-center gap-2 text-sm">
+                                                <input
+                                                  type="radio"
+                                                  name={`select-${r.id}`}
+                                                  checked={sel?.selected_supplier_submission_id === sub.id}
+                                                  onChange={() => handleSelect(r.id, sub.id)}
+                                                  disabled={!!submitting}
+                                                />
+                                                {sub.supplier_label ?? sub.company_name ?? "공급사"}
+                                              </label>
+                                            ))}
+                                            <label className="flex items-center gap-2 text-sm">
+                                              <input
+                                                type="radio"
+                                                name={`select-${r.id}`}
+                                                checked={sel?.selection_status === "none"}
+                                                onChange={() => handleSelect(r.id, null)}
+                                                disabled={!!submitting}
+                                              />
+                                              선택 안함
+                                            </label>
+                                          </div>
+                                        </TableCell>
+                                      )}
+                                    </TableRow>
+                                  );
+                                })}
+                              </TableBody>
+                            </table>
+                          </CardContent>
+                        </Card>
+
+                        <Card>
+                          <CardHeader>
+                            <CardTitle>노선별 가격</CardTitle>
+                          </CardHeader>
+                          <CardContent className="overflow-x-auto p-0 pl-6">
+                            <table className="min-w-max table-fixed border-collapse text-sm">
+                              <colgroup>
+                                <col style={{ width: W_NODE_PRICE }} />
+                                {submissions.map((sub) => (
+                                  <col key={sub.id} style={{ width: W_SUPPLIER }} />
+                                ))}
+                              </colgroup>
+                              <TableHeader>
+                                <TableRow>
+                                  <TableHead className="sticky left-0 z-10 border-r-2 border-border bg-card shadow-[2px_0_0_0_hsl(var(--border))]" style={{ width: W_NODE_PRICE, minWidth: W_NODE_PRICE }}>노선</TableHead>
+                                  {submissions.map((sub) => (
+                                    <TableHead key={sub.id} className="min-w-[120px] shrink-0" style={{ width: W_SUPPLIER }}>
+                                      {sub.supplier_label ?? sub.company_name ?? "공급사"} 왕복/편도
+                                    </TableHead>
+                                  ))}
+                                </TableRow>
+                              </TableHeader>
+                              <TableBody>
+                                {displayedRoutes.map((r) => (
+                                  <TableRow key={r.id}>
+                                    <TableCell className="sticky left-0 z-[1] border-r-2 border-border bg-background" style={{ width: W_NODE_PRICE }}>{r.departure_points?.name ?? "-"}</TableCell>
+                                    {submissions.map((sub) => {
+                                      const p = prices.find((x) => x.rfq_route_id === r.id && x.supplier_submission_id === sub.id);
+                                      return (
+                                        <TableCell key={sub.id} className="shrink-0" style={{ width: W_SUPPLIER }}>
+                                          {p ? `${p.round_trip_price ?? "-"} / ${p.one_way_price ?? "-"}` : "-"}
+                                        </TableCell>
+                                      );
+                                    })}
+                                  </TableRow>
+                                ))}
+                              </TableBody>
+                            </table>
+                          </CardContent>
+                        </Card>
+                      </TabsContent>
                     );
                   })}
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
-        </CardContent>
-      </Card>
+                </Tabs>
+              </TabsContent>
+            );
+          })}
+        </Tabs>
+      )}
 
       {error && <p className="text-sm text-destructive">{error}</p>}
 

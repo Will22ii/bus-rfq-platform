@@ -10,10 +10,10 @@ const STATUS_MAP: Record<string, { label: string; className: string }> = {
   cancelled: { label: "요청 취소", className: "bg-muted text-muted-foreground border-border" },
 };
 
-export function StatusBadge({ status }: { status: string }) {
+export function StatusBadge({ status, className }: { status: string; className?: string }) {
   const config = STATUS_MAP[status] ?? { label: status, className: "" };
   return (
-    <Badge variant="outline" className={cn("font-medium", config.className)}>
+    <Badge variant="outline" className={cn("font-medium", config.className, className)}>
       {config.label}
     </Badge>
   );

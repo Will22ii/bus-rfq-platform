@@ -41,7 +41,7 @@ export function RFQBasicInfo({
         />
       </div>
       <div className="space-y-2">
-        <Label>견적 마감일시 (오늘부터 5일 이내)</Label>
+        <Label>견적 마감일</Label>
         <Input
           type="datetime-local"
           value={quoteDeadlineAt}

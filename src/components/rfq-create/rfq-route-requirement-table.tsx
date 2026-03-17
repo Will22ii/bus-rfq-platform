@@ -24,6 +24,10 @@ const BUS_TYPES = [
   { value: "28_seat", label: "28인승" },
 ] as const;
 
+function busTypeToLabel(value: string): string {
+  return BUS_TYPES.find((b) => b.value === value)?.label ?? value;
+}
+
 export type RouteRequirement = {
   bus_type: "44_seat" | "31_seat" | "28_seat";
   required_round_trip_count: number;
@@ -83,8 +87,8 @@ export function RFQRouteRequirementTable({
           ))}
           <TableHead className="min-w-[100px]">귀가 출발</TableHead>
           <TableHead className="min-w-[100px]">버스 타입</TableHead>
-          <TableHead className="min-w-[80px]">왕복 필요</TableHead>
-          <TableHead className="min-w-[80px]">편도 필요</TableHead>
+          <TableHead className="min-w-[80px]">왕복 필요 대수</TableHead>
+          <TableHead className="min-w-[80px]">편도 필요 대수</TableHead>
         </TableRow>
       </TableHeader>
       <TableBody>
@@ -109,7 +113,7 @@ export function RFQRouteRequirementTable({
                   }
                 >
                   <SelectTrigger className="w-[120px]">
-                    <SelectValue />
+                    <span className="truncate">{busTypeToLabel(req.bus_type)}</span>
                   </SelectTrigger>
                   <SelectContent>
                     {BUS_TYPES.map((b) => (

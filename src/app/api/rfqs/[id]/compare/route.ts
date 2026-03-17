@@ -36,6 +36,8 @@ export async function GET(
   const dateIds = (rfqDates ?? []).map((d) => d.id);
   if (dateIds.length === 0) {
     return jsonSuccess({
+      status: rfq.status,
+      rfq_dates: [],
       routes: [],
       supplier_submissions: [],
       route_supply: [],
@@ -121,6 +123,7 @@ export async function GET(
 
   return jsonSuccess({
     status: rfq.status,
+    rfq_dates: rfqDates ?? [],
     routes,
     supplier_submissions,
     route_supply: supplyRes.data ?? [],

@@ -1,17 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import Link from "next/link";
-import { Button } from "@/components/ui/button";
+import { useRouter } from "next/navigation";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/status-badge";
 import { useAuth } from "@/hooks/use-auth";
@@ -21,6 +12,7 @@ type RequesterRfq = { id: string; title: string; concert_name: string; venue: st
 type SupplierRfq = { id: string; rfq_id: string; submitted_at: string; rfq?: { id: string; title: string; venue: string; status: string; quote_deadline_at: string } };
 
 export default function MyRfqPage() {
+  const router = useRouter();
   const { company } = useAuth();
   const [requesterList, setRequesterList] = useState<RequesterRfq[]>([]);
   const [supplierList, setSupplierList] = useState<SupplierRfq[]>([]);
@@ -61,114 +53,102 @@ export default function MyRfqPage() {
   }, [canSupply]);
 
   return (
-    <div className="space-y-6">
-      <h1 className="text-2xl font-semibold">My RFQ</h1>
+    <div className="flex min-h-[calc(100vh-6rem)] flex-col items-center justify-center py-6">
+      <div className="w-full max-w-2xl space-y-4">
+        <h1 className="text-2xl font-semibold">My RFQ</h1>
 
-      <Tabs value={tabValue} onValueChange={setActiveTab}>
-        <TabsList>
-          {canRequest && <TabsTrigger value="requester">내가 생성한 RFQ</TabsTrigger>}
-          {canSupply && <TabsTrigger value="supplier">내가 제출한 RFQ</TabsTrigger>}
-        </TabsList>
+        <Tabs value={tabValue} onValueChange={setActiveTab} className="w-full">
+          <TabsList className="mb-4 w-full">
+            {canRequest && <TabsTrigger value="requester">내가 생성한 RFQ</TabsTrigger>}
+            {canSupply && <TabsTrigger value="supplier">내가 제출한 RFQ</TabsTrigger>}
+          </TabsList>
 
-        {canRequest && (
-          <TabsContent value="requester">
-            <Card>
-              <CardHeader>
-                <CardTitle>내가 생성한 RFQ</CardTitle>
-                <CardDescription>요청사로 생성한 견적 요청 목록입니다.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                {loadingReq && <p className="text-muted-foreground">불러오는 중...</p>}
-                {!loadingReq && requesterList.length === 0 && (
-                  <p className="text-muted-foreground">생성한 RFQ가 없습니다.</p>
-                )}
-                {!loadingReq && requesterList.length > 0 && (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>제목</TableHead>
-                        <TableHead>행사장</TableHead>
-                        <TableHead>견적 마감일</TableHead>
-                        <TableHead>상태</TableHead>
-                        <TableHead className="w-[80px]"></TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
+          {canRequest && (
+            <TabsContent value="requester" className="mt-0">
+              <Card className="w-full">
+                <CardHeader className="space-y-1.5 pb-4">
+                  <CardTitle>내가 생성한 RFQ</CardTitle>
+                  <CardDescription>생성한 견적 요청 목록입니다.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4 pt-0">
+                  {loadingReq && (
+                    <p className="py-6 text-center text-base text-muted-foreground">불러오는 중...</p>
+                  )}
+                  {!loadingReq && requesterList.length === 0 && (
+                    <p className="py-6 text-center text-base text-muted-foreground">생성한 RFQ가 없습니다.</p>
+                  )}
+                  {!loadingReq && requesterList.length > 0 && (
+                    <div className="flex flex-col gap-3">
                       {requesterList.map((rfq) => (
-                        <TableRow key={rfq.id}>
-                          <TableCell className="font-medium">{rfq.title}</TableCell>
-                          <TableCell>{rfq.venue}</TableCell>
-                          <TableCell>
-                            {new Date(rfq.quote_deadline_at).toLocaleDateString("ko-KR")}
-                          </TableCell>
-                          <TableCell>
-                            <StatusBadge status={rfq.status} />
-                          </TableCell>
-                          <TableCell>
-                            <Link href={`/rfqs/${rfq.id}`}>
-                              <Button variant="ghost" size="sm">상세</Button>
-                            </Link>
-                          </TableCell>
-                        </TableRow>
+                        <Card
+                          key={rfq.id}
+                          className="flex min-h-[88px] cursor-pointer transition-colors hover:bg-muted/50"
+                          onClick={() => router.push(`/rfqs/${rfq.id}`)}
+                        >
+                          <CardContent className="flex flex-1 items-center justify-between gap-4 px-5 py-4">
+                            <div className="flex min-w-0 flex-col gap-1.5">
+                              <p className="text-xl font-medium leading-tight">{rfq.title}</p>
+                              <p className="text-base text-muted-foreground">
+                                {rfq.venue} · {new Date(rfq.quote_deadline_at).toLocaleDateString("ko-KR")}
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 items-center">
+                              <StatusBadge status={rfq.status} />
+                            </div>
+                          </CardContent>
+                        </Card>
                       ))}
-                    </TableBody>
-                  </Table>
-                )}
-              </CardContent>
-            </Card>
-          </TabsContent>
-        )}
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+          )}
 
-        {canSupply && (
-          <TabsContent value="supplier">
-            <Card>
-              <CardHeader>
-                <CardTitle>내가 제출한 RFQ</CardTitle>
-                <CardDescription>공급사로 견적을 제출한 RFQ 목록입니다.</CardDescription>
-              </CardHeader>
-              <CardContent>
-                {loadingSup && <p className="text-muted-foreground">불러오는 중...</p>}
-                {!loadingSup && supplierList.length === 0 && (
-                  <p className="text-muted-foreground">제출한 RFQ가 없습니다.</p>
-                )}
-                {!loadingSup && supplierList.length > 0 && (
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>RFQ 제목</TableHead>
-                        <TableHead>행사장</TableHead>
-                        <TableHead>제출일시</TableHead>
-                        <TableHead>상태</TableHead>
-                        <TableHead className="w-[80px]"></TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
+          {canSupply && (
+            <TabsContent value="supplier" className="mt-0">
+              <Card className="w-full">
+                <CardHeader className="space-y-1.5 pb-4">
+                  <CardTitle>내가 제출한 RFQ</CardTitle>
+                  <CardDescription>견적을 제출한 RFQ 목록입니다.</CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4 pt-0">
+                  {loadingSup && (
+                    <p className="py-6 text-center text-base text-muted-foreground">불러오는 중...</p>
+                  )}
+                  {!loadingSup && supplierList.length === 0 && (
+                    <p className="py-6 text-center text-base text-muted-foreground">제출한 RFQ가 없습니다.</p>
+                  )}
+                  {!loadingSup && supplierList.length > 0 && (
+                    <div className="flex flex-col gap-3">
                       {supplierList.map((s) => (
-                        <TableRow key={s.id}>
-                          <TableCell className="font-medium">{s.rfq?.title ?? "-"}</TableCell>
-                          <TableCell>{s.rfq?.venue ?? "-"}</TableCell>
-                          <TableCell>
-                            {new Date(s.submitted_at).toLocaleString("ko-KR")}
-                          </TableCell>
-                          <TableCell>
-                            <StatusBadge status={s.rfq?.status ?? "open"} />
-                            <span className="ml-2 text-xs text-muted-foreground">제출 완료</span>
-                          </TableCell>
-                          <TableCell>
-                            <Link href={`/rfqs/${s.rfq_id}`}>
-                              <Button variant="ghost" size="sm">상세</Button>
-                            </Link>
-                          </TableCell>
-                        </TableRow>
+                        <Card
+                          key={s.id}
+                          className="flex min-h-[88px] cursor-pointer transition-colors hover:bg-muted/50"
+                          onClick={() => router.push(`/rfqs/${s.rfq_id}`)}
+                        >
+                          <CardContent className="flex flex-1 items-center justify-between gap-4 px-5 py-4">
+                            <div className="flex min-w-0 flex-col gap-1.5">
+                              <p className="text-xl font-medium leading-tight">{s.rfq?.title ?? "-"}</p>
+                              <p className="text-base text-muted-foreground">
+                                {s.rfq?.venue ?? "-"} · {new Date(s.submitted_at).toLocaleDateString("ko-KR")}
+                              </p>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-2">
+                              <StatusBadge status={s.rfq?.status ?? "open"} />
+                              <span className="text-sm text-muted-foreground">제출 완료</span>
+                            </div>
+                          </CardContent>
+                        </Card>
                       ))}
-                    </TableBody>
-                  </Table>
-                )}
-              </CardContent>
-            </Card>
-          </TabsContent>
-        )}
-      </Tabs>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            </TabsContent>
+          )}
+        </Tabs>
+      </div>
     </div>
   );
 }
