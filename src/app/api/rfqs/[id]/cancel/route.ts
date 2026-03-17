@@ -2,6 +2,10 @@ import { NextRequest } from "next/server";
 import { requireRequester } from "@/lib/api-auth";
 import { jsonSuccess, jsonError } from "@/lib/api-response";
 import { supabase } from "@/lib/supabase/client";
+import {
+  createNotification,
+  getRecipientUserIdsByCompanyIds,
+} from "@/lib/notifications";
 
 export async function POST(
   request: NextRequest,
@@ -42,6 +46,16 @@ export async function POST(
     .eq("id", rfqId);
 
   if (updErr) return jsonError(updErr.message, 500);
+
+  const { data: submissions } = await supabase
+    .from("rfq_supplier_submissions")
+    .select("supplier_company_id")
+    .eq("rfq_id", rfqId);
+  const companyIds = [...new Set((submissions ?? []).map((s) => s.supplier_company_id))];
+  const recipientUserIds = await getRecipientUserIdsByCompanyIds(companyIds);
+  for (const uid of recipientUserIds) {
+    await createNotification(uid, "rfq_cancelled", rfqId);
+  }
 
   return jsonSuccess({ status: "cancelled" });
 }

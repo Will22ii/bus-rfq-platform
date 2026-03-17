@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { requireRequesterOrSupplier } from "@/lib/api-auth";
 import { jsonSuccess, jsonError } from "@/lib/api-response";
 import { supabase } from "@/lib/supabase/client";
+import { createQuoteDeadlinePassedNotificationsForRfq } from "@/lib/notifications";
 
 export async function GET(
   request: NextRequest,
@@ -32,6 +33,17 @@ export async function GET(
       .eq("id", rfqId);
     rfq.status = "in_review";
     rfq.review_started_at = now;
+
+    const { data: subs } = await supabase
+      .from("rfq_supplier_submissions")
+      .select("supplier_company_id")
+      .eq("rfq_id", rfqId);
+    const supplierIds = [...new Set((subs ?? []).map((s: { supplier_company_id: string }) => s.supplier_company_id))];
+    await createQuoteDeadlinePassedNotificationsForRfq(
+      rfqId,
+      rfq.requester_company_id,
+      supplierIds
+    );
   }
 
   const isRequester = rfq.requester_company_id === auth.company.id;

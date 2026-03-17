@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { requireRequester, requireRequesterOrSupplier } from "@/lib/api-auth";
 import { jsonSuccess, jsonError } from "@/lib/api-response";
 import { supabase } from "@/lib/supabase/client";
+import { createQuoteDeadlinePassedNotificationsForRfq } from "@/lib/notifications";
 
 const MAX_QUOTE_DAYS = 5;
 
@@ -197,11 +198,32 @@ export async function GET(request: NextRequest) {
 
   const now = new Date().toISOString();
 
-  await supabase
+  const { data: toReview } = await supabase
     .from("rfqs")
-    .update({ status: "in_review", review_started_at: now })
+    .select("id, requester_company_id")
     .eq("status", "open")
     .lt("quote_deadline_at", now);
+
+  const idsToUpdate = (toReview ?? []).map((r) => r.id);
+  if (idsToUpdate.length > 0) {
+    await supabase
+      .from("rfqs")
+      .update({ status: "in_review", review_started_at: now })
+      .in("id", idsToUpdate);
+
+    for (const rfq of toReview ?? []) {
+      const { data: subs } = await supabase
+        .from("rfq_supplier_submissions")
+        .select("supplier_company_id")
+        .eq("rfq_id", rfq.id);
+      const supplierIds = [...new Set((subs ?? []).map((s) => s.supplier_company_id))];
+      await createQuoteDeadlinePassedNotificationsForRfq(
+        rfq.id,
+        rfq.requester_company_id,
+        supplierIds
+      );
+    }
+  }
 
   const { data: openOrReview, error: e1 } = await supabase
     .from("rfqs")

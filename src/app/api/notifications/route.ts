@@ -8,6 +8,19 @@ export async function GET(request: NextRequest) {
   if ("error" in authResult) return authResult.error;
   const { auth } = authResult;
 
+  const { searchParams } = new URL(request.url);
+  const countOnly = searchParams.get("count_only") === "true";
+
+  if (countOnly) {
+    const { count, error: countErr } = await supabase
+      .from("notifications")
+      .select("*", { count: "exact", head: true })
+      .eq("recipient_user_id", auth.profile.id)
+      .eq("is_read", false);
+    if (countErr) return jsonError(countErr.message, 500);
+    return jsonSuccess({ count: count ?? 0 });
+  }
+
   const { data: list, error } = await supabase
     .from("notifications")
     .select("id, notification_type, reference_id, created_at, is_read")

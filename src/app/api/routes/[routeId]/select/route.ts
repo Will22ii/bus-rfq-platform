@@ -2,6 +2,10 @@ import { NextRequest } from "next/server";
 import { requireRequester } from "@/lib/api-auth";
 import { jsonSuccess, jsonError } from "@/lib/api-response";
 import { supabase } from "@/lib/supabase/client";
+import {
+  createNotification,
+  getRecipientUserIdByCompanyId,
+} from "@/lib/notifications";
 
 type SelectBody =
   | { supplier_submission_id: string }
@@ -95,6 +99,19 @@ export async function POST(
       .eq("rfq_route_id", routeId);
 
     if (updErr) return jsonError(updErr.message, 500);
+
+    const { data: subCompany } = await supabase
+      .from("rfq_supplier_submissions")
+      .select("supplier_company_id")
+      .eq("id", subId)
+      .single();
+    const supplierUserId = subCompany
+      ? await getRecipientUserIdByCompanyId(subCompany.supplier_company_id)
+      : null;
+    if (supplierUserId) {
+      await createNotification(supplierUserId, "supplier_selected", rfq.id);
+    }
+
     return jsonSuccess({ selection_status: "selected", supplier_submission_id: subId });
   }
 

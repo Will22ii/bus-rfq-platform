@@ -2,6 +2,10 @@ import { NextRequest } from "next/server";
 import { requireSupplier } from "@/lib/api-auth";
 import { jsonSuccess, jsonError } from "@/lib/api-response";
 import { supabase } from "@/lib/supabase/client";
+import {
+  createNotification,
+  getRecipientUserIdByCompanyId,
+} from "@/lib/notifications";
 
 type RouteSupplyInput = {
   route_id: string;
@@ -130,11 +134,20 @@ export async function POST(
       }
     } else {
       hasAnySupply = true;
-      if (p.round_trip_price == null || p.one_way_price == null) {
-        return jsonError(`공급이 있는 노선에는 왕복·편도 가격이 모두 필요합니다. (노선 순서: ${i + 1})`);
+      // 부분 공급 허용: 해당 공급이 0이면 해당 가격은 null, 1 이상이면 가격 필수
+      if ((s.supply_round_trip_count ?? 0) >= 1) {
+        if (p.round_trip_price == null || p.round_trip_price < 0) {
+          return jsonError(`route_prices[${i}]: 왕복 공급이 있으면 왕복 가격이 필요합니다.`);
+        }
+      } else if (p.round_trip_price != null) {
+        return jsonError(`route_prices[${i}]: 왕복 공급이 없으면 왕복 가격은 비워두세요.`);
       }
-      if (p.round_trip_price < 0 || p.one_way_price < 0) {
-        return jsonError(`route_prices[${i}]: price must be >= 0`);
+      if ((s.supply_one_way_count ?? 0) >= 1) {
+        if (p.one_way_price == null || p.one_way_price < 0) {
+          return jsonError(`route_prices[${i}]: 편도 공급이 있으면 편도 가격이 필요합니다.`);
+        }
+      } else if (p.one_way_price != null) {
+        return jsonError(`route_prices[${i}]: 편도 공급이 없으면 편도 가격은 비워두세요.`);
       }
     }
   }
@@ -180,6 +193,11 @@ export async function POST(
 
   if (supplyRes.error) return jsonError(supplyRes.error.message, 500);
   if (priceRes.error) return jsonError(priceRes.error.message, 500);
+
+  const requesterUserId = await getRecipientUserIdByCompanyId(rfq.requester_company_id);
+  if (requesterUserId) {
+    await createNotification(requesterUserId, "quote_submitted", rfqId);
+  }
 
   return jsonSuccess({ id: submission.id }, 201);
 }

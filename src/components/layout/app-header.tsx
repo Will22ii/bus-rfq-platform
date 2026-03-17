@@ -11,7 +11,8 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { supabase } from "@/lib/supabase/client";
 import { useAuth } from "@/hooks/use-auth";
-import { Bell, FileText, List, Shield, User } from "lucide-react";
+import { FileText, List, Shield, User } from "lucide-react";
+import { NotificationDropdown } from "@/components/notification-dropdown";
 
 export function AppHeader() {
   const pathname = usePathname();
@@ -70,12 +71,7 @@ export function AppHeader() {
                   My RFQ
                 </Button>
               </Link>
-              <Link href="/notifications">
-                <Button variant={pathname === "/notifications" ? "secondary" : "ghost"} size="sm">
-                  <Bell className="mr-1.5 size-4" />
-                  알림
-                </Button>
-              </Link>
+              <NotificationDropdown />
             </>
           )}
           {isAdmin && (
